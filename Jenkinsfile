@@ -1,8 +1,8 @@
 pipeline {
     agent any
-    tools {
-        jdk 'Java 22.0.1' // Must match EXACTLY what you named it in Jenkins Global Tool Configuration
-    }
+
+    // Remove the tools block since it's causing JDK installation issues
+    // Terraform doesn't require Java, so we don't need JDK for this pipeline
 
     parameters {
         choice(
@@ -27,12 +27,13 @@ pipeline {
         stage('Verify Tools') {
             steps {
                 script {
-                    echo "Java version:"
-                    sh 'java -version'
-                    echo "Terraform version:"
-                    sh 'terraform version'
-                    echo "Azure CLI version:"
-                    sh 'az --version'
+                    echo "Checking required tools..."
+                    sh '''
+                        echo "Terraform version:"
+                        terraform version || { echo "Terraform not found"; exit 1; }
+                        echo "Azure CLI version:"
+                        az --version || { echo "Azure CLI not found"; exit 1; }
+                    '''
                 }
             }
         }
@@ -42,12 +43,14 @@ pipeline {
                 withCredentials([azureServicePrincipal('Jenkins-SP')]) {
                     script {
                         sh """
+                            echo "Logging into Azure..."
                             az login --service-principal \
                                 -u \$AZURE_CLIENT_ID \
                                 -p \$AZURE_CLIENT_SECRET \
                                 --tenant \$AZURE_TENANT_ID
                             az account set --subscription \$AZURE_SUBSCRIPTION_ID
                             
+                            echo "Getting storage account key..."
                             export ARM_ACCESS_KEY=\$(az storage account keys list \
                                 -g ${TF_STATE_RG} \
                                 -n ${TF_STATE_SA} \
@@ -117,7 +120,12 @@ pipeline {
 
     post {
         always {
-            cleanWs()
+            script {
+                // Clean up workspace inside a node context
+                node {
+                    cleanWs()
+                }
+            }
         }
         success {
             echo "SUCCESS: ${params.ACTION} completed for ${params.ENVIRONMENT}"
