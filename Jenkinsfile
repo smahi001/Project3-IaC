@@ -2,13 +2,13 @@ pipeline {
     agent any
     
     environment {
-        ARM_ACCESS_KEY = credentials('arm-access-key')  // Uses the credential you added
-        TF_IN_AUTOMATION = "true"                      // Auto-mode for Terraform
+        ARM_ACCESS_KEY = credentials('arm-access-key')
+        TF_IN_AUTOMATION = "true"
     }
 
     parameters {
-        choice(name: 'ACTION',     choices: ['plan', 'apply'], description: 'Dry-run or deploy')
-        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'production'], description: 'Deploy to which environment?')
+        choice(name: 'ACTION', choices: ['plan', 'apply'], description: 'Dry-run or deploy')
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'production'], description: 'Target environment')
     }
 
     stages {
@@ -31,21 +31,29 @@ pipeline {
         
         stage('Terraform Plan/Apply') {
             steps {
-                sh """
-                terraform validate && \
-                terraform plan -out=tfplan -var environment=${params.ENVIRONMENT} -input=false
-                """
-                archiveArtifacts 'tfplan'
+                // First validate
+                sh 'terraform validate'
                 
-                // Auto-apply if ACTION=apply (non-production) or wait for approval (production)
+                // Then plan or apply
                 script {
-                    if (params.ACTION == 'apply') {
+                    if (params.ACTION == 'plan') {
+                        sh """
+                        terraform plan \
+                            -var-file=${params.ENVIRONMENT}.tfvars \
+                            -input=false
+                        """
+                    } else if (params.ACTION == 'apply') {
                         if (params.ENVIRONMENT == 'production') {
-                            timeout(time: 30, unit: 'MINUTES') {
+                            timeout(30) {
                                 input(message: "Approve PRODUCTION deployment?")
                             }
                         }
-                        sh 'terraform apply -auto-approve -input=false tfplan'
+                        sh """
+                        terraform apply \
+                            -auto-approve \
+                            -var-file=${params.ENVIRONMENT}.tfvars \
+                            -input=false
+                        """
                     }
                 }
             }
