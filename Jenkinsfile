@@ -2,15 +2,15 @@ pipeline {
     agent any
     
     environment {
-        ARM_ACCESS_KEY = credentials('arm-access-key')  # For storage account
+        // Storage account credentials
+        ARM_ACCESS_KEY = credentials('arm-access-key')
         TF_IN_AUTOMATION = "true"
         
-        # Add these authentication variables
-        ARM_USE_MSI = "false"
-        ARM_SUBSCRIPTION_ID = credentials('azure-sub-id')
-        ARM_CLIENT_ID = credentials('azure-client-id')
-        ARM_CLIENT_SECRET = credentials('azure-client-secret')
-        ARM_TENANT_ID = credentials('azure-tenant-id')
+        // Service Principal credentials from your output
+        ARM_SUBSCRIPTION_ID = "0c3951d2-78d6-421a-8afc-9886db28d0eb"
+        ARM_CLIENT_ID = "63b7aeb4-36de-468e-a7df-526b8fda26e2"
+        ARM_CLIENT_SECRET = credentials('azure-sp-secret')  // Store the password value here
+        ARM_TENANT_ID = "5e786868-9c77-4ab8-a348-aa45f70cf549"
     }
 
     parameters {
@@ -39,25 +39,20 @@ pipeline {
             }
         }
         
-        stage('Terraform Validate') {
-            steps {
-                sh 'terraform validate'
-            }
-        }
-        
         stage('Terraform Plan/Apply') {
             steps {
                 script {
                     def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
+                    
+                    sh 'terraform validate'
                     
                     if (params.ACTION == 'plan') {
                         sh """
                         terraform plan \
                             -var-file=${tfVarsFile} \
                             -input=false \
-                            -out=tfplan-${params.ENVIRONMENT}
+                            -out=tfplan
                         """
-                        archiveArtifacts artifacts: "tfplan-${params.ENVIRONMENT}"
                     } else if (params.ACTION == 'apply') {
                         if (params.ENVIRONMENT == 'production') {
                             timeout(time: 30, unit: 'MINUTES') {
@@ -81,7 +76,7 @@ pipeline {
             cleanWs() 
         }
         success { 
-            echo "SUCCESS: ${params.ACTION} completed for ${params.ENVIRONMENT}"
+            echo "SUCCESS: ${params.ACTION} for ${params.ENVIRONMENT}"
         }
         failure { 
             echo "FAILED: Check logs at ${env.BUILD_URL}"
