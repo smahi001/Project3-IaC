@@ -4,8 +4,6 @@ pipeline {
     environment {
         ARM_ACCESS_KEY = credentials('arm-access-key')
         TF_IN_AUTOMATION = "true"
-        // Add Azure CLI path if needed
-        PATH = "/usr/bin:/usr/local/bin:${env.PATH}" 
     }
 
     parameters {
@@ -14,28 +12,8 @@ pipeline {
     }
 
     stages {
-        stage('Setup Environment') {
-            steps {
-                script {
-                    // Verify Azure CLI is installed
-                    sh '''
-                        if ! command -v az &> /dev/null; then
-                            echo "Azure CLI not found, installing..."
-                            curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-                        else
-                            echo "Azure CLI is already installed"
-                        fi
-                        
-                        az --version
-                    '''
-                }
-            }
-        }
-        
         stage('Checkout Code') { 
-            steps { 
-                checkout scm 
-            } 
+            steps { checkout scm } 
         }
         
         stage('Terraform Init') {
@@ -46,58 +24,44 @@ pipeline {
                     -backend-config="storage_account_name=mytfstate123" \
                     -backend-config="container_name=tfstate" \
                     -backend-config="key=${params.ENVIRONMENT}.tfstate" \
-                    -upgrade \
-                    -reconfigure
+                    -upgrade -reconfigure
                 """
-            }
-        }
-        
-        stage('Terraform Validate') {
-            steps {
-                sh 'terraform validate'
             }
         }
         
         stage('Terraform Plan/Apply') {
             steps {
+                // First validate
+                sh 'terraform validate'
+                
+                // Then plan or apply
                 script {
                     def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
                     
-                    // Login using service principal
-                    withCredentials([usernamePassword(
-                        credentialsId: 'azure-credentials',
-                        usernameVariable: 'ARM_CLIENT_ID',
-                        passwordVariable: 'ARM_CLIENT_SECRET'
-                    )]) {
+                    // Check if vars file exists
+                    def varsFileExists = fileExists(tfVarsFile)
+                    if (!varsFileExists) {
+                        error("ERROR: Variables file ${tfVarsFile} not found!")
+                    }
+                    
+                    if (params.ACTION == 'plan') {
                         sh """
-                        az login --service-principal \
-                            -u ${env.ARM_CLIENT_ID} \
-                            -p ${env.ARM_CLIENT_SECRET} \
-                            --tenant ${env.ARM_TENANT_ID}
+                        terraform plan \
+                            -var-file=${tfVarsFile} \
+                            -input=false
                         """
-                        
-                        if (params.ACTION == 'plan') {
-                            sh """
-                            terraform plan \
-                                -var-file=${tfVarsFile} \
-                                -input=false \
-                                -out=tfplan-${params.ENVIRONMENT}
-                            """
-                            archiveArtifacts artifacts: "tfplan-${params.ENVIRONMENT}"
-                        } 
-                        else if (params.ACTION == 'apply') {
-                            if (params.ENVIRONMENT == 'production') {
-                                timeout(time: 30, unit: 'MINUTES') {
-                                    input(message: "Approve PRODUCTION deployment?")
-                                }
+                    } else if (params.ACTION == 'apply') {
+                        if (params.ENVIRONMENT == 'production') {
+                            timeout(time: 30, unit: 'MINUTES') {
+                                input(message: "Approve PRODUCTION deployment?")
                             }
-                            sh """
-                            terraform apply \
-                                -auto-approve \
-                                -var-file=${tfVarsFile} \
-                                -input=false
-                            """
                         }
+                        sh """
+                        terraform apply \
+                            -auto-approve \
+                            -var-file=${tfVarsFile} \
+                            -input=false
+                        """
                     }
                 }
             }
@@ -105,14 +69,8 @@ pipeline {
     }
 
     post {
-        always { 
-            cleanWs() 
-        }
-        success { 
-            echo "SUCCESS: ${params.ACTION} completed for ${params.ENVIRONMENT}"
-        }
-        failure { 
-            echo "FAILED: Check logs at ${env.BUILD_URL}"
-        }
+        always { cleanWs() }
+        success { echo "SUCCESS: ${params.ACTION} for ${params.ENVIRONMENT}" }
+        failure { echo "FAILED: Check logs at ${env.BUILD_URL}" }
     }
 }
