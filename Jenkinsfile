@@ -69,65 +69,61 @@ pipeline {
         }
         
         stage('Terraform Plan/Apply') {
-            steps {
-                script {
-                    def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
-                    def planFile = "tfplan-${params.ENVIRONMENT}"
-                    
-                    if (params.ACTION == 'plan') {
-                        sh """
-                        terraform plan \
-                            -var="environment=${params.ENVIRONMENT}" \
-                            -var-file=${tfVarsFile} \
-                            -input=false \
-                            -out=${planFile}
-                        """
-                        // Save plan file for potential apply
-                        archiveArtifacts artifacts: "${planFile}", fingerprint: true
-                        
-                        // Generate plan output as JSON for parsing if needed
-                        sh """
-                        terraform show -json ${planFile} > ${planFile}.json
-                        """
-                        archiveArtifacts artifacts: "${planFile}.json"
-                        
-                    } else if (params.ACTION == 'apply') {
-                        // Additional approval for production
-                        if (params.ENVIRONMENT == 'production') {
-                            timeout(time: 30, unit: 'MINUTES') {
-                                input(
-                                    message: "PRODUCTION DEPLOYMENT APPROVAL REQUIRED", 
-                                    ok: "Deploy to Production",
-                                    parameters: [
-                                        text(
-                                            name: 'REASON', 
-                                            description: 'Reason for deployment', 
-                                            defaultValue: 'Scheduled deployment'
-                                        )
-                                    ]
-                                )
-                            }
-                        }
-                        
-                        // For apply, use the plan file if available
-                        def applyCmd = """
-                        terraform apply \
-                            -auto-approve \
-                            -var="environment=${params.ENVIRONMENT}" \
-                            -var-file=${tfVarsFile} \
-                            -input=false
-                        """
-                        
-                        // If plan file exists from previous step, use it
-                        if (fileExists("${planFile}")) {
-                            applyCmd = "terraform apply -auto-approve ${planFile}"
-                        }
-                        
-                        sh applyCmd
+    steps {
+        script {
+            def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
+            
+            // Verify the vars file contains all required variables
+            def requiredVars = [
+                'prefix',
+                'resource_group_name',
+                'virtual_network_name',
+                'address_space',
+                'subnet_prefixes',
+                'vm_size',
+                'admin_username',
+                'db_sku_name',
+                'db_storage_mb'
+            ]
+            
+            def varsContent = readFile(tfVarsFile)
+            requiredVars.each { var ->
+                if (!varsContent.contains("${var} =")) {
+                    error("ERROR: Required variable '${var}' not found in ${tfVarsFile}")
+                }
+            }
+
+            if (params.ACTION == 'plan') {
+                sh """
+                terraform plan \
+                    -var-file=${tfVarsFile} \
+                    -input=false \
+                    -out=tfplan-${params.ENVIRONMENT}
+                """
+                archiveArtifacts artifacts: "tfplan-${params.ENVIRONMENT}"
+                
+            } else if (params.ACTION == 'apply') {
+                if (params.ENVIRONMENT == 'production') {
+                    timeout(time: 30, unit: 'MINUTES') {
+                        input(message: "Approve PRODUCTION deployment?")
                     }
+                }
+                
+                // Check if plan file exists from previous step
+                if (fileExists("tfplan-${params.ENVIRONMENT}")) {
+                    sh "terraform apply -auto-approve tfplan-${params.ENVIRONMENT}"
+                } else {
+                    sh """
+                    terraform apply \
+                        -auto-approve \
+                        -var-file=${tfVarsFile} \
+                        -input=false
+                    """
                 }
             }
         }
+    }
+}
         
         stage('Output Results') {
             steps {
