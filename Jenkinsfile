@@ -13,7 +13,34 @@ pipeline {
 
     stages {
         stage('Checkout Code') { 
-            steps { checkout scm } 
+            steps { 
+                checkout scm 
+                // Print repository contents for debugging
+                sh 'ls -la'
+            } 
+        }
+        
+        stage('Verify Files') {
+            steps {
+                script {
+                    def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
+                    echo "Checking for variables file: ${tfVarsFile}"
+                    
+                    if (!fileExists(tfVarsFile)) {
+                        error("ERROR: Variables file ${tfVarsFile} not found in repository!")
+                    }
+                    
+                    // Also check for backend configuration
+                    def backendConfig = [
+                        "resource_group_name=tfstate-rg",
+                        "storage_account_name=mytfstate123",
+                        "container_name=tfstate",
+                        "key=${params.ENVIRONMENT}.tfstate"
+                    ]
+                    
+                    echo "Backend will be configured with: ${backendConfig}"
+                }
+            }
         }
         
         stage('Terraform Init') {
@@ -31,26 +58,22 @@ pipeline {
         
         stage('Terraform Plan/Apply') {
             steps {
-                // First validate
                 sh 'terraform validate'
                 
-                // Then plan or apply
                 script {
                     def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
-                    
-                    // Check if vars file exists
-                    def varsFileExists = fileExists(tfVarsFile)
-                    if (!varsFileExists) {
-                        error("ERROR: Variables file ${tfVarsFile} not found!")
-                    }
                     
                     if (params.ACTION == 'plan') {
                         sh """
                         terraform plan \
                             -var-file=${tfVarsFile} \
-                            -input=false
+                            -input=false \
+                            -out=tfplan
                         """
-                    } else if (params.ACTION == 'apply') {
+                        // Archive the plan file
+                        archiveArtifacts artifacts: 'tfplan', fingerprint: true
+                    } 
+                    else if (params.ACTION == 'apply') {
                         if (params.ENVIRONMENT == 'production') {
                             timeout(time: 30, unit: 'MINUTES') {
                                 input(message: "Approve PRODUCTION deployment?")
@@ -69,8 +92,17 @@ pipeline {
     }
 
     post {
-        always { cleanWs() }
-        success { echo "SUCCESS: ${params.ACTION} for ${params.ENVIRONMENT}" }
-        failure { echo "FAILED: Check logs at ${env.BUILD_URL}" }
+        always { 
+            cleanWs() 
+            echo "Pipeline completed for ${params.ENVIRONMENT} environment"
+        }
+        success { 
+            echo "SUCCESS: ${params.ACTION} executed for ${params.ENVIRONMENT}" 
+            // You could add Slack notifications here
+        }
+        failure { 
+            echo "FAILED: Check logs at ${env.BUILD_URL}" 
+            // You could add Slack/email notifications here
+        }
     }
 }
