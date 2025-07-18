@@ -15,33 +15,41 @@ pipeline {
     }
 
     stages {
-        stage('Verify Tools') {
+        stage('Install Prerequisites') {
             steps {
                 script {
-                    // Skip tool verification since we know Azure CLI is missing
-                    echo "Skipping tool verification - assuming tools are installed"
+                    // Install Azure CLI if not present
+                    sh '''
+                        if ! command -v az &> /dev/null; then
+                            echo "Installing Azure CLI..."
+                            curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+                        else
+                            echo "Azure CLI already installed"
+                        fi
+                        
+                        # Verify Terraform is installed
+                        if ! command -v terraform &> /dev/null; then
+                            echo "ERROR: Terraform not found! Please install it on the Jenkins agent."
+                            exit 1
+                        fi
+                    '''
                 }
             }
         }
 
-        stage('Azure Login') {
+        stage('Azure Authentication') {
             steps {
                 withCredentials([azureServicePrincipal('Jenkins-SP')]) {
                     script {
-                        // Simple check if az command exists
                         sh '''
-                            if ! command -v az &> /dev/null; then
-                                echo "Azure CLI not found! Please install it on the Jenkins agent."
-                                exit 1
-                            fi
-                            
+                            echo "Logging into Azure..."
                             az login --service-principal \
                                 -u $AZURE_CLIENT_ID \
                                 -p $AZURE_CLIENT_SECRET \
                                 --tenant $AZURE_TENANT_ID
                             az account set --subscription $AZURE_SUBSCRIPTION_ID
                             
-                            # Get storage key for Terraform backend
+                            echo "Getting storage account key..."
                             export ARM_ACCESS_KEY=$(az storage account keys list \
                                 -g tfstate-rg \
                                 -n mytfstate123 \
@@ -52,7 +60,7 @@ pipeline {
             }
         }
 
-        stage('Checkout & Init') {
+        stage('Checkout & Initialize') {
             steps {
                 checkout scm
                 sh '''
