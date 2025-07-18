@@ -34,30 +34,14 @@ pipeline {
         
         stage('Terraform Validate') {
             steps {
-                script {
-                    try {
-                        sh 'terraform validate'
-                    } catch (err) {
-                        echo "Validation failed: ${err}"
-                        currentBuild.result = 'FAILURE'
-                        error('Terraform validation failed')
-                    }
-                }
+                sh 'terraform validate'
             }
         }
         
         stage('Terraform Plan') {
             steps {
-                script {
-                    try {
-                        sh 'terraform plan -out=tfplan'
-                        archiveArtifacts artifacts: 'tfplan'
-                    } catch (err) {
-                        echo "Plan failed: ${err}"
-                        currentBuild.result = 'FAILURE'
-                        error('Terraform plan failed')
-                    }
-                }
+                sh 'terraform plan -out=tfplan'
+                archiveArtifacts artifacts: 'tfplan'
             }
         }
     }
@@ -65,9 +49,6 @@ pipeline {
     post {
         always {
             cleanWs()
-            script {
-                // Add any cleanup steps here
-            }
         }
         failure {
             mail to: 'team@yourdomain.com',
