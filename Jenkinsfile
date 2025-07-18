@@ -15,6 +15,8 @@ pipeline {
         stage('Checkout Code') { 
             steps { 
                 checkout scm 
+                // Clean up any existing Terraform files
+                sh 'rm -rf .terraform* || true'
             } 
         }
         
@@ -25,7 +27,9 @@ pipeline {
                     -backend-config="resource_group_name=tfstate-rg" \
                     -backend-config="storage_account_name=mytfstate123" \
                     -backend-config="container_name=tfstate" \
-                    -backend-config="key=${params.ENVIRONMENT}.tfstate"
+                    -backend-config="key=${params.ENVIRONMENT}.tfstate" \
+                    -upgrade \
+                    -reconfigure
                 """
             }
         }
@@ -47,7 +51,9 @@ pipeline {
                         """
                     } else if (params.ACTION == 'apply') {
                         if (params.ENVIRONMENT == 'production') {
-                            input(message: "Approve PRODUCTION deployment?")
+                            timeout(time: 30, unit: 'MINUTES') {
+                                input(message: "Approve PRODUCTION deployment?")
+                            }
                         }
                         sh """
                         terraform apply \
