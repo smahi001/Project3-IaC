@@ -2,8 +2,15 @@ pipeline {
     agent any
     
     environment {
-        ARM_ACCESS_KEY = credentials('arm-access-key')
+        ARM_ACCESS_KEY = credentials('arm-access-key')  # For storage account
         TF_IN_AUTOMATION = "true"
+        
+        # Add these authentication variables
+        ARM_USE_MSI = "false"
+        ARM_SUBSCRIPTION_ID = credentials('azure-sub-id')
+        ARM_CLIENT_ID = credentials('azure-client-id')
+        ARM_CLIENT_SECRET = credentials('azure-client-secret')
+        ARM_TENANT_ID = credentials('azure-tenant-id')
     }
 
     parameters {
@@ -15,8 +22,6 @@ pipeline {
         stage('Checkout Code') { 
             steps { 
                 checkout scm 
-                // Clean up any existing Terraform files
-                sh 'rm -rf .terraform* || true'
             } 
         }
         
@@ -34,21 +39,25 @@ pipeline {
             }
         }
         
+        stage('Terraform Validate') {
+            steps {
+                sh 'terraform validate'
+            }
+        }
+        
         stage('Terraform Plan/Apply') {
             steps {
                 script {
                     def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
-                    
-                    // First validate
-                    sh 'terraform validate'
                     
                     if (params.ACTION == 'plan') {
                         sh """
                         terraform plan \
                             -var-file=${tfVarsFile} \
                             -input=false \
-                            -out=tfplan
+                            -out=tfplan-${params.ENVIRONMENT}
                         """
+                        archiveArtifacts artifacts: "tfplan-${params.ENVIRONMENT}"
                     } else if (params.ACTION == 'apply') {
                         if (params.ENVIRONMENT == 'production') {
                             timeout(time: 30, unit: 'MINUTES') {
@@ -72,7 +81,7 @@ pipeline {
             cleanWs() 
         }
         success { 
-            echo "SUCCESS: ${params.ACTION} for ${params.ENVIRONMENT}"
+            echo "SUCCESS: ${params.ACTION} completed for ${params.ENVIRONMENT}"
         }
         failure { 
             echo "FAILED: Check logs at ${env.BUILD_URL}"
