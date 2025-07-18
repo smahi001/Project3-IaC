@@ -1,5 +1,5 @@
 variable "environment" {
-  description = "The deployment environment (dev, staging, production)"
+  description = "The deployment environment"
   type        = string
 }
 
@@ -37,17 +37,12 @@ variable "subnet_prefixes" {
 variable "vm_size" {
   description = "Virtual Machine size"
   type        = string
+  default     = "Standard_B1s"
 }
 
 variable "admin_username" {
   description = "Admin username for VMs"
   type        = string
-}
-
-variable "instance_count" {
-  description = "Number of VM instances"
-  type        = number
-  default     = 1
 }
 
 variable "db_sku_name" {
