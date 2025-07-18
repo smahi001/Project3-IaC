@@ -1,10 +1,14 @@
 provider "azurerm" {
   features {}
   
-  # Explicitly use service principal authentication
-  # These will come from environment variables
-  use_msi = false
-  skip_provider_registration = true
+  # Explicitly disable Azure CLI auth
+  use_cli = false
+  
+  # Use environment variables for auth
+  subscription_id = var.subscription_id
+  client_id       = var.client_id
+  client_secret   = var.client_secret
+  tenant_id       = var.tenant_id
 }
 terraform {
   backend "azurerm" {
