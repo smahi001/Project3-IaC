@@ -1,7 +1,7 @@
 pipeline {
     agent any
     tools {
-        jdk 'jdk-22.0.1' // Matches the Java installation you configured in Jenkins
+        jdk 'Java 22.0.1' // Must match EXACTLY what you named it in Jenkins Global Tool Configuration
     }
 
     parameters {
@@ -18,7 +18,6 @@ pipeline {
     }
 
     environment {
-        // Backend configuration
         TF_STATE_RG = "tfstate-rg"
         TF_STATE_SA = "mytfstate123"
         TF_STATE_CONTAINER = "tfstate"
@@ -44,12 +43,11 @@ pipeline {
                     script {
                         sh """
                             az login --service-principal \
-                                -u ${AZURE_CLIENT_ID} \
-                                -p ${AZURE_CLIENT_SECRET} \
-                                --tenant ${AZURE_TENANT_ID}
-                            az account set --subscription ${AZURE_SUBSCRIPTION_ID}
+                                -u \$AZURE_CLIENT_ID \
+                                -p \$AZURE_CLIENT_SECRET \
+                                --tenant \$AZURE_TENANT_ID
+                            az account set --subscription \$AZURE_SUBSCRIPTION_ID
                             
-                            # Get storage key for Terraform backend
                             export ARM_ACCESS_KEY=\$(az storage account keys list \
                                 -g ${TF_STATE_RG} \
                                 -n ${TF_STATE_SA} \
@@ -120,13 +118,12 @@ pipeline {
     post {
         always {
             cleanWs()
-            echo "Pipeline execution completed"
         }
         success {
-            echo "SUCCESS: ${params.ACTION} executed for ${params.ENVIRONMENT}"
+            echo "SUCCESS: ${params.ACTION} completed for ${params.ENVIRONMENT}"
         }
         failure {
-            echo "FAILURE: Check logs at ${env.BUILD_URL}"
+            echo "FAILED: Check logs at ${env.BUILD_URL}"
         }
     }
 }
