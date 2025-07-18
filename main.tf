@@ -1,8 +1,11 @@
 provider "azurerm" {
   features {}
+  
+  # Explicitly use service principal authentication
+  # These will come from environment variables
+  use_msi = false
   skip_provider_registration = true
 }
-
 terraform {
   backend "azurerm" {
     resource_group_name  = "tfstate-rg"
