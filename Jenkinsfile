@@ -7,8 +7,16 @@ pipeline {
     }
 
     parameters {
-        choice(name: 'ACTION', choices: ['plan', 'apply'], description: 'Dry-run or deploy')
-        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'production'], description: 'Target environment')
+        choice(
+            name: 'ACTION', 
+            choices: ['plan', 'apply'], 
+            description: 'Dry-run or deploy'
+        )
+        choice(
+            name: 'ENVIRONMENT', 
+            choices: ['dev', 'staging', 'production'], 
+            description: 'Target environment'
+        )
     }
 
     stages {
@@ -26,6 +34,7 @@ pipeline {
                     -backend-config="storage_account_name=mytfstate123" \
                     -backend-config="container_name=tfstate" \
                     -backend-config="key=${params.ENVIRONMENT}.tfstate" \
+                    -upgrade \
                     -reconfigure
                 """
             }
