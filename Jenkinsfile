@@ -5,23 +5,21 @@ pipeline {
         // Azure Storage Backend Credentials
         ARM_ACCESS_KEY = credentials('arm-access-key')
         
-        // Azure Service Principal Credentials
-        ARM_CLIENT_ID = '63b7aeb4-36de-468e-a7df-526b8fda26e2'
-        ARM_CLIENT_SECRET = credentials('azure-sp-secret')
-        ARM_SUBSCRIPTION_ID = '0c3951d2-78d6-421a-8afc-9886db28d0eb'
-        ARM_TENANT_ID = '5e786868-9c77-4ab8-a348-aa45f70cf549'
+        // Azure Service Principal Credentials using Jenkins-SP credential
+        ARM_CLIENT_ID = credentials('Jenkins-SP')['clientId']
+        ARM_CLIENT_SECRET = credentials('Jenkins-SP')['clientSecret']
+        ARM_SUBSCRIPTION_ID = credentials('Jenkins-SP')['subscriptionId']
+        ARM_TENANT_ID = credentials('Jenkins-SP')['tenantId']
         
-        // Terraform Automation Flag
+        // Terraform Automation Settings
         TF_IN_AUTOMATION = "true"
-        
-        // Terraform Workspace Naming
         TF_WORKSPACE = "${params.ENVIRONMENT}"
     }
 
     parameters {
         choice(
             name: 'ACTION',
-            choices: ['plan', 'apply', 'destroy'],
+            choices: ['plan', 'apply'],
             description: 'Select Terraform action to perform'
         )
         choice(
@@ -35,10 +33,10 @@ pipeline {
         stage('Verify Credentials') {
             steps {
                 script {
-                    // Verify required credentials exist
+                    // Verify credentials exist before proceeding
                     withCredentials([
                         string(credentialsId: 'arm-access-key', variable: 'ARM_ACCESS_KEY'),
-                        string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')
+                        [$class: 'AzureServicePrincipal', credentialsId: 'Jenkins-SP']
                     ]) {
                         echo "All required credentials are available"
                     }
@@ -46,9 +44,15 @@ pipeline {
             }
         }
         
-        stage('Checkout Code') {
+        stage('Checkout SCM') {
             steps {
-                checkout scm
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/smahi001/Project3-IaC.git'
+                    ]]
+                ])
                 sh 'terraform version'
             }
         }
@@ -67,10 +71,13 @@ pipeline {
                             -reconfigure
                         """
                         
-                        // Select workspace
-                        sh "terraform workspace select ${params.ENVIRONMENT} || terraform workspace new ${params.ENVIRONMENT}"
+                        // Select or create workspace
+                        sh """
+                        terraform workspace select ${params.ENVIRONMENT} || \
+                        terraform workspace new ${params.ENVIRONMENT}
+                        """
                     } catch (err) {
-                        error("Terraform initialization failed: ${err}")
+                        error("Terraform initialization failed: ${err.message}")
                     }
                 }
             }
@@ -82,7 +89,7 @@ pipeline {
                     try {
                         sh 'terraform validate'
                     } catch (err) {
-                        error("Configuration validation failed: ${err}")
+                        error("Configuration validation failed: ${err.message}")
                     }
                 }
             }
@@ -95,14 +102,15 @@ pipeline {
             steps {
                 script {
                     try {
-                        sh 'terraform plan -out=tfplan -var environment=${params.ENVIRONMENT}'
+                        sh """
+                        terraform plan \
+                            -out=tfplan \
+                            -var environment=${params.ENVIRONMENT} \
+                            -input=false
+                        """
                         archiveArtifacts artifacts: 'tfplan'
-                        
-                        // Publish plan output
-                        def planOutput = sh script: 'terraform show -no-color tfplan', returnStdout: true
-                        echo "Terraform Plan Output:\n${planOutput}"
                     } catch (err) {
-                        error("Planning phase failed: ${err}")
+                        error("Planning phase failed: ${err.message}")
                     }
                 }
             }
@@ -117,13 +125,6 @@ pipeline {
             }
             steps {
                 script {
-                    def planOutput = sh script: 'terraform show -no-color tfplan', returnStdout: true
-                    mail(
-                        to: 'devops-team@yourcompany.com',
-                        subject: "APPROVAL REQUIRED: Terraform Apply for ${params.ENVIRONMENT}",
-                        body: "Review the plan output below and approve:\n\n${planOutput}"
-                    )
-                    
                     timeout(time: 30, unit: 'MINUTES') {
                         input(
                             message: 'Approve production deployment?', 
@@ -146,24 +147,11 @@ pipeline {
                         echo "Production deployment approved by: ${approver}"
                     }
                     
-                    sh 'terraform apply -auto-approve tfplan'
-                }
-            }
-        }
-        
-        stage('Terraform Destroy') {
-            when {
-                expression { params.ACTION == 'destroy' }
-            }
-            steps {
-                script {
-                    timeout(time: 10, unit: 'MINUTES') {
-                        input(
-                            message: 'WARNING: This will DESTROY all infrastructure. Confirm?',
-                            ok: 'Destroy'
-                        )
+                    try {
+                        sh 'terraform apply -auto-approve -input=false tfplan'
+                    } catch (err) {
+                        error("Apply failed: ${err.message}")
                     }
-                    sh 'terraform destroy -auto-approve -var environment=${params.ENVIRONMENT}'
                 }
             }
         }
@@ -171,40 +159,12 @@ pipeline {
     
     post {
         always {
-            script {
-                // Clean up sensitive files
-                sh 'rm -f tfplan || true'
-                sh 'rm -f terraform.tfvars || true'
-                sh 'rm -f .terraform.lock.hcl || true'
-                
-                // Clean up workspace if not preserving for debugging
-                if (currentBuild.result != 'FAILURE' || params.ENVIRONMENT == 'production') {
-                    deleteDir()
-                }
-            }
+            cleanWs()
         }
-        success {
-            script {
-                echo "Pipeline succeeded! ${env.BUILD_URL}"
-            }
-        }
+        
         failure {
             script {
                 echo "Pipeline failed! Check logs at ${env.BUILD_URL}"
-                
-                // Enhanced error notification
-                def errorMsg = "Pipeline failed in stage: ${currentBuild.result}\n"
-                errorMsg += "Job: ${env.JOB_NAME}\n"
-                errorMsg += "Build: ${env.BUILD_NUMBER}\n"
-                errorMsg += "Environment: ${params.ENVIRONMENT}\n"
-                errorMsg += "Action: ${params.ACTION}\n"
-                errorMsg += "URL: ${env.BUILD_URL}"
-                
-                mail(
-                    to: 'devops-team@yourcompany.com',
-                    subject: "FAILED: ${env.JOB_NAME} - ${params.ENVIRONMENT}",
-                    body: errorMsg
-                )
             }
         }
     }
