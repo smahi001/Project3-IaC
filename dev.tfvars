@@ -1,22 +1,23 @@
-environment = "dev"
-prefix = "dev"
+environment          = "dev"
+resource_group_name  = "project3-rg"  # Using your existing RG
+location             = "southindia"
 
-resource_group_name = "myapp-dev-rg"
-location = "southindia"
+# Networking
+vnet_name            = "vnet-dev"
+vnet_address_space   = ["10.0.0.0/16"]
+subnets = [
+  {
+    name           = "subnet-0"
+    address_prefix = "10.0.1.0/24"
+  },
+  {
+    name           = "subnet-1"
+    address_prefix = "10.0.2.0/24"
+  }
+]
 
-virtual_network_name = "vnet-dev"
-address_space = ["10.0.0.0/16"]
-subnet_prefixes = ["10.0.1.0/24", "10.0.2.0/24"]
-
-vm_size = "Standard_B1s"
-admin_username = "devadmin"
-
-db_sku_name = "GP_Gen5_2"
-db_storage_mb = 5120
-
-enable_monitoring = false
-
+# Tags
 tags = {
   Environment = "Development"
-  Owner = "DevOps"
+  Owner       = "DevOps"
 }
