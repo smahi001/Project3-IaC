@@ -2,19 +2,19 @@ pipeline {
     agent any
     
     environment {
+        // Azure authentication
+        ARM_SUBSCRIPTION_ID = "0c3951d2-78d6-421a-8afc-9886db28d0eb"
+        ARM_CLIENT_ID = credentials('azure-client-id')
+        ARM_CLIENT_SECRET = credentials('azure-client-secret')
+        ARM_TENANT_ID = "5e786868-9c77-4ab8-a348-aa45f70cf549"
+        
         // Storage account credentials
         ARM_ACCESS_KEY = credentials('arm-access-key')
         TF_IN_AUTOMATION = "true"
-        
-        // Service Principal credentials from your output
-        ARM_SUBSCRIPTION_ID = "0c3951d2-78d6-421a-8afc-9886db28d0eb"
-        ARM_CLIENT_ID = "63b7aeb4-36de-468e-a7df-526b8fda26e2"
-        ARM_CLIENT_SECRET = credentials('azure-sp-secret')  // Store the password value here
-        ARM_TENANT_ID = "5e786868-9c77-4ab8-a348-aa45f70cf549"
     }
 
     parameters {
-        choice(name: 'ACTION', choices: ['plan', 'apply'], description: 'Dry-run or deploy')
+        choice(name: 'ACTION', choices: ['plan', 'apply'], description: 'Terraform action')
         choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'production'], description: 'Target environment')
     }
 
@@ -39,31 +39,40 @@ pipeline {
             }
         }
         
+        stage('Terraform Validate') {
+            steps {
+                sh 'terraform validate'
+            }
+        }
+        
         stage('Terraform Plan/Apply') {
             steps {
                 script {
                     def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
-                    
-                    sh 'terraform validate'
                     
                     if (params.ACTION == 'plan') {
                         sh """
                         terraform plan \
                             -var-file=${tfVarsFile} \
                             -input=false \
-                            -out=tfplan
+                            -out=tfplan \
+                            -compact-warnings
                         """
                     } else if (params.ACTION == 'apply') {
+                        // Additional approval for production
                         if (params.ENVIRONMENT == 'production') {
                             timeout(time: 30, unit: 'MINUTES') {
                                 input(message: "Approve PRODUCTION deployment?")
                             }
                         }
+                        
                         sh """
                         terraform apply \
                             -auto-approve \
                             -var-file=${tfVarsFile} \
-                            -input=false
+                            -input=false \
+                            -compact-warnings \
+                            -lock-timeout=5m
                         """
                     }
                 }
@@ -74,12 +83,19 @@ pipeline {
     post {
         always { 
             cleanWs() 
+            script {
+                // Always show terraform output
+                sh 'terraform show -no-color || true'
+            }
         }
         success { 
-            echo "SUCCESS: ${params.ACTION} for ${params.ENVIRONMENT}"
+            echo "SUCCESS: Terraform ${params.ACTION} completed for ${params.ENVIRONMENT}"
         }
         failure { 
             echo "FAILED: Check logs at ${env.BUILD_URL}"
+            // Additional failure diagnostics
+            sh 'terraform version || true'
+            sh 'az --version || true'
         }
     }
 }
