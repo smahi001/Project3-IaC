@@ -6,7 +6,7 @@ pipeline {
         AZURE_TENANT_ID = '5e786868-9c77-4ab8-a348-aa45f70cf549'
         AZURE_CLIENT_ID = '63b7aeb4-36de-468e-a7df-526b8fda26e2'
         AZURE_CLIENT_SECRET = credentials('WqY8Q~w9xW4IjzK6ZOUDf41ZguBeCBdotnY5Babx') // Reference to the credential ID
-        ARM_ACCESS_KEY = credentials('Jenkins-sp') // For Terraform backend
+        ARM_ACCESS_KEY = credentials('e0oyDzOhrYeLGorWV38ivxm49wAl5PUhKPNzKJSacTuZYiiE/9AvifvXvNkHRDTjVQfWGylwrO9X+AStXxqSUQ==') // For Terraform backend
     }
     
     stages {
