@@ -4,18 +4,24 @@ pipeline {
     environment {
         ARM_ACCESS_KEY = credentials('arm-access-key')
         TF_IN_AUTOMATION = "true"
+        AZURE_CLI_ENABLE_LOGIN = "true"
     }
 
     parameters {
-        choice(name: 'ACTION', choices: ['plan', 'apply'], description: 'Dry-run or deploy')
-        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'production'], description: 'Target environment')
+        choice(name: 'ACTION', 
+               choices: ['plan', 'apply'], 
+               description: 'Select plan for dry-run or apply to deploy')
+               
+        choice(name: 'ENVIRONMENT', 
+               choices: ['dev', 'staging', 'production'], 
+               description: 'Select target environment')
     }
 
     stages {
         stage('Checkout Code') { 
             steps { 
                 checkout scm 
-                // Print repository contents for debugging
+                // Debug: Show repository contents
                 sh 'ls -la'
             } 
         }
@@ -24,21 +30,21 @@ pipeline {
             steps {
                 script {
                     def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
-                    echo "Checking for variables file: ${tfVarsFile}"
+                    echo "Verifying configuration for ${params.ENVIRONMENT} environment"
                     
+                    // Verify tfvars file exists
                     if (!fileExists(tfVarsFile)) {
                         error("ERROR: Variables file ${tfVarsFile} not found in repository!")
                     }
                     
-                    // Also check for backend configuration
+                    // Verify backend configuration
                     def backendConfig = [
                         "resource_group_name=tfstate-rg",
                         "storage_account_name=mytfstate123",
                         "container_name=tfstate",
                         "key=${params.ENVIRONMENT}.tfstate"
                     ]
-                    
-                    echo "Backend will be configured with: ${backendConfig}"
+                    echo "Backend configuration: ${backendConfig}"
                 }
             }
         }
@@ -56,35 +62,85 @@ pipeline {
             }
         }
         
-        stage('Terraform Plan/Apply') {
+        stage('Terraform Validate') {
             steps {
                 sh 'terraform validate'
-                
+            }
+        }
+        
+        stage('Terraform Plan/Apply') {
+            steps {
                 script {
                     def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
+                    def planFile = "tfplan-${params.ENVIRONMENT}"
                     
                     if (params.ACTION == 'plan') {
                         sh """
                         terraform plan \
+                            -var="environment=${params.ENVIRONMENT}" \
                             -var-file=${tfVarsFile} \
                             -input=false \
-                            -out=tfplan
+                            -out=${planFile}
                         """
-                        // Archive the plan file
-                        archiveArtifacts artifacts: 'tfplan', fingerprint: true
-                    } 
-                    else if (params.ACTION == 'apply') {
+                        // Save plan file for potential apply
+                        archiveArtifacts artifacts: "${planFile}", fingerprint: true
+                        
+                        // Generate plan output as JSON for parsing if needed
+                        sh """
+                        terraform show -json ${planFile} > ${planFile}.json
+                        """
+                        archiveArtifacts artifacts: "${planFile}.json"
+                        
+                    } else if (params.ACTION == 'apply') {
+                        // Additional approval for production
                         if (params.ENVIRONMENT == 'production') {
                             timeout(time: 30, unit: 'MINUTES') {
-                                input(message: "Approve PRODUCTION deployment?")
+                                input(
+                                    message: "PRODUCTION DEPLOYMENT APPROVAL REQUIRED", 
+                                    ok: "Deploy to Production",
+                                    parameters: [
+                                        text(
+                                            name: 'REASON', 
+                                            description: 'Reason for deployment', 
+                                            defaultValue: 'Scheduled deployment'
+                                        )
+                                    ]
+                                )
                             }
                         }
-                        sh """
+                        
+                        // For apply, use the plan file if available
+                        def applyCmd = """
                         terraform apply \
                             -auto-approve \
+                            -var="environment=${params.ENVIRONMENT}" \
                             -var-file=${tfVarsFile} \
                             -input=false
                         """
+                        
+                        // If plan file exists from previous step, use it
+                        if (fileExists("${planFile}")) {
+                            applyCmd = "terraform apply -auto-approve ${planFile}"
+                        }
+                        
+                        sh applyCmd
+                    }
+                }
+            }
+        }
+        
+        stage('Output Results') {
+            steps {
+                script {
+                    // Get outputs and save them
+                    sh 'terraform output -json > terraform_output.json'
+                    archiveArtifacts artifacts: 'terraform_output.json'
+                    
+                    // Parse and display important outputs
+                    def outputs = readJSON file: 'terraform_output.json'
+                    echo "Deployment completed. Key outputs:"
+                    outputs.each { key, value -> 
+                        echo "${key}: ${value.value}"
                     }
                 }
             }
@@ -92,17 +148,51 @@ pipeline {
     }
 
     post {
-        always { 
-            cleanWs() 
-            echo "Pipeline completed for ${params.ENVIRONMENT} environment"
+        always {
+            // Clean up workspace but keep important files
+            cleanWs(
+                cleanWhenAborted: true,
+                cleanWhenFailure: true,
+                cleanWhenNotBuilt: true,
+                cleanWhenSuccess: true,
+                deleteDirs: true,
+                patterns: [
+                    [pattern: '.terraform/**', type: 'INCLUDE'],
+                    [pattern: '.terraform.lock.hcl', type: 'EXCLUDE'],
+                    [pattern: '**/*.tfstate', type: 'EXCLUDE'],
+                    [pattern: '**/*.tfvars', type: 'EXCLUDE']
+                ]
+            )
+            
+            // Send notification
+            script {
+                def subject = "${currentBuild.result ?: 'SUCCESS'}: Job '${env.JOB_NAME}' (${env.BUILD_NUMBER})"
+                def details = """
+                Environment: ${params.ENVIRONMENT}
+                Action: ${params.ACTION}
+                Build URL: ${env.BUILD_URL}
+                Duration: ${currentBuild.durationString}
+                """
+                
+                echo subject
+                echo details
+                
+                // Add Slack/Email notification here if configured
+                // slackSend channel: '#devops', message: "${subject}\n${details}"
+            }
         }
-        success { 
-            echo "SUCCESS: ${params.ACTION} executed for ${params.ENVIRONMENT}" 
-            // You could add Slack notifications here
+        
+        success {
+            echo "SUCCESS: Terraform ${params.ACTION} completed for ${params.ENVIRONMENT} environment"
         }
-        failure { 
-            echo "FAILED: Check logs at ${env.BUILD_URL}" 
-            // You could add Slack/email notifications here
+        
+        failure {
+            echo "FAILURE: Check full logs at ${env.BUILD_URL}console"
+            // Additional failure handling can be added here
+        }
+        
+        unstable {
+            echo "UNSTABLE: The build was marked as unstable"
         }
     }
 }
