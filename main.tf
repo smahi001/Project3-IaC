@@ -1,18 +1,22 @@
-provider "azurerm" {
-  features {}
-  
-  # Explicitly configure authentication via environment variables
-  # These will be set in Jenkins
-  use_msi = false
-  skip_provider_registration = true
-}
 terraform {
+  required_version = ">= 1.0.0"
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
+  }
+
   backend "azurerm" {
     resource_group_name  = "tfstate-rg"
     storage_account_name = "mytfstate123"
-    container_name       = "tfstate"
-    key                  = "terraform.tfstate"
+    container_name      = "tfstate"
+    key                 = "dev.tfstate"
   }
+}
+
+provider "azurerm" {
+  features {}
 }
 
 resource "azurerm_resource_group" "main" {
@@ -22,17 +26,17 @@ resource "azurerm_resource_group" "main" {
 }
 
 resource "azurerm_virtual_network" "main" {
-  name                = var.virtual_network_name
-  address_space       = var.address_space
+  name                = var.vnet_name
+  address_space       = var.vnet_address_space
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = var.tags
 }
 
 resource "azurerm_subnet" "subnets" {
-  count                = length(var.subnet_prefixes)
-  name                 = "subnet-${count.index}"
+  count                = length(var.subnets)
+  name                 = var.subnets[count.index].name
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
-  address_prefixes     = [var.subnet_prefixes[count.index]]
+  address_prefixes     = [var.subnets[count.index].address_prefix]
 }
