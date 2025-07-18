@@ -2,10 +2,10 @@ pipeline {
     agent any
     
     environment {
-        // Azure authentication
+        // Azure authentication - using the credentials you have
         ARM_SUBSCRIPTION_ID = "0c3951d2-78d6-421a-8afc-9886db28d0eb"
-        ARM_CLIENT_ID = credentials('azure-client-id')
-        ARM_CLIENT_SECRET = credentials('azure-client-secret')
+        ARM_CLIENT_ID = credentials('Jenkins-SP')  // Your Azure Credential
+        ARM_CLIENT_SECRET = credentials('azure-sp-secret')  // Your new-secret
         ARM_TENANT_ID = "5e786868-9c77-4ab8-a348-aa45f70cf549"
         
         // Storage account credentials
@@ -27,15 +27,21 @@ pipeline {
         
         stage('Terraform Init') {
             steps {
-                sh """
-                terraform init \
-                    -backend-config="resource_group_name=tfstate-rg" \
-                    -backend-config="storage_account_name=mytfstate123" \
-                    -backend-config="container_name=tfstate" \
-                    -backend-config="key=${params.ENVIRONMENT}.tfstate" \
-                    -upgrade \
-                    -reconfigure
-                """
+                withCredentials([
+                    string(credentialsId: 'arm-access-key', variable: 'ARM_ACCESS_KEY'),
+                    string(credentialsId: 'Jenkins-SP', variable: 'ARM_CLIENT_ID'),
+                    string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')
+                ]) {
+                    sh """
+                    terraform init \
+                        -backend-config="resource_group_name=tfstate-rg" \
+                        -backend-config="storage_account_name=mytfstate123" \
+                        -backend-config="container_name=tfstate" \
+                        -backend-config="key=${params.ENVIRONMENT}.tfstate" \
+                        -upgrade \
+                        -reconfigure
+                    """
+                }
             }
         }
         
@@ -50,30 +56,35 @@ pipeline {
                 script {
                     def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
                     
-                    if (params.ACTION == 'plan') {
-                        sh """
-                        terraform plan \
-                            -var-file=${tfVarsFile} \
-                            -input=false \
-                            -out=tfplan \
-                            -compact-warnings
-                        """
-                    } else if (params.ACTION == 'apply') {
-                        // Additional approval for production
-                        if (params.ENVIRONMENT == 'production') {
-                            timeout(time: 30, unit: 'MINUTES') {
-                                input(message: "Approve PRODUCTION deployment?")
+                    withCredentials([
+                        string(credentialsId: 'arm-access-key', variable: 'ARM_ACCESS_KEY'),
+                        string(credentialsId: 'Jenkins-SP', variable: 'ARM_CLIENT_ID'),
+                        string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')
+                    ]) {
+                        if (params.ACTION == 'plan') {
+                            sh """
+                            terraform plan \
+                                -var-file=${tfVarsFile} \
+                                -input=false \
+                                -out=tfplan \
+                                -compact-warnings
+                            """
+                        } else if (params.ACTION == 'apply') {
+                            if (params.ENVIRONMENT == 'production') {
+                                timeout(time: 30, unit: 'MINUTES') {
+                                    input(message: "Approve PRODUCTION deployment?")
+                                }
                             }
+                            
+                            sh """
+                            terraform apply \
+                                -auto-approve \
+                                -var-file=${tfVarsFile} \
+                                -input=false \
+                                -compact-warnings \
+                                -lock-timeout=5m
+                            """
                         }
-                        
-                        sh """
-                        terraform apply \
-                            -auto-approve \
-                            -var-file=${tfVarsFile} \
-                            -input=false \
-                            -compact-warnings \
-                            -lock-timeout=5m
-                        """
                     }
                 }
             }
@@ -81,21 +92,33 @@ pipeline {
     }
 
     post {
-        always { 
-            cleanWs() 
-            script {
-                // Always show terraform output
-                sh 'terraform show -no-color || true'
+        always {
+            node {
+                cleanWs()
+                script {
+                    try {
+                        sh 'terraform show -no-color || true'
+                    } catch (Exception e) {
+                        echo "Could not show terraform state: ${e.message}"
+                    }
+                }
             }
         }
         success { 
-            echo "SUCCESS: Terraform ${params.ACTION} completed for ${params.ENVIRONMENT}"
+            node {
+                echo "SUCCESS: Terraform ${params.ACTION} completed for ${params.ENVIRONMENT}"
+            }
         }
         failure { 
-            echo "FAILED: Check logs at ${env.BUILD_URL}"
-            // Additional failure diagnostics
-            sh 'terraform version || true'
-            sh 'az --version || true'
+            node {
+                echo "FAILED: Check logs at ${env.BUILD_URL}"
+                try {
+                    sh 'terraform version || true'
+                    sh 'az --version || true'
+                } catch (Exception e) {
+                    echo "Could not get versions: ${e.message}"
+                }
+            }
         }
     }
 }
