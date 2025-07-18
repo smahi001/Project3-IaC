@@ -4,22 +4,34 @@ pipeline {
     environment {
         ARM_ACCESS_KEY = credentials('arm-access-key')
         TF_IN_AUTOMATION = "true"
+        // Add Azure CLI path if needed
+        PATH = "/usr/bin:/usr/local/bin:${env.PATH}" 
     }
 
     parameters {
-        choice(
-            name: 'ACTION', 
-            choices: ['plan', 'apply'], 
-            description: 'Dry-run or deploy'
-        )
-        choice(
-            name: 'ENVIRONMENT', 
-            choices: ['dev', 'staging', 'production'], 
-            description: 'Target environment'
-        )
+        choice(name: 'ACTION', choices: ['plan', 'apply'], description: 'Dry-run or deploy')
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'production'], description: 'Target environment')
     }
 
     stages {
+        stage('Setup Environment') {
+            steps {
+                script {
+                    // Verify Azure CLI is installed
+                    sh '''
+                        if ! command -v az &> /dev/null; then
+                            echo "Azure CLI not found, installing..."
+                            curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+                        else
+                            echo "Azure CLI is already installed"
+                        fi
+                        
+                        az --version
+                    '''
+                }
+            }
+        }
+        
         stage('Checkout Code') { 
             steps { 
                 checkout scm 
@@ -51,27 +63,41 @@ pipeline {
                 script {
                     def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
                     
-                    if (params.ACTION == 'plan') {
+                    // Login using service principal
+                    withCredentials([usernamePassword(
+                        credentialsId: 'azure-credentials',
+                        usernameVariable: 'ARM_CLIENT_ID',
+                        passwordVariable: 'ARM_CLIENT_SECRET'
+                    )]) {
                         sh """
-                        terraform plan \
-                            -var-file=${tfVarsFile} \
-                            -input=false \
-                            -out=tfplan-${params.ENVIRONMENT}
+                        az login --service-principal \
+                            -u ${env.ARM_CLIENT_ID} \
+                            -p ${env.ARM_CLIENT_SECRET} \
+                            --tenant ${env.ARM_TENANT_ID}
                         """
-                        archiveArtifacts artifacts: "tfplan-${params.ENVIRONMENT}"
-                    } 
-                    else if (params.ACTION == 'apply') {
-                        if (params.ENVIRONMENT == 'production') {
-                            timeout(time: 30, unit: 'MINUTES') {
-                                input(message: "Approve PRODUCTION deployment?")
+                        
+                        if (params.ACTION == 'plan') {
+                            sh """
+                            terraform plan \
+                                -var-file=${tfVarsFile} \
+                                -input=false \
+                                -out=tfplan-${params.ENVIRONMENT}
+                            """
+                            archiveArtifacts artifacts: "tfplan-${params.ENVIRONMENT}"
+                        } 
+                        else if (params.ACTION == 'apply') {
+                            if (params.ENVIRONMENT == 'production') {
+                                timeout(time: 30, unit: 'MINUTES') {
+                                    input(message: "Approve PRODUCTION deployment?")
+                                }
                             }
+                            sh """
+                            terraform apply \
+                                -auto-approve \
+                                -var-file=${tfVarsFile} \
+                                -input=false
+                            """
                         }
-                        sh """
-                        terraform apply \
-                            -auto-approve \
-                            -var-file=${tfVarsFile} \
-                            -input=false
-                        """
                     }
                 }
             }
