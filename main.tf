@@ -1,14 +1,10 @@
 provider "azurerm" {
   features {}
   
-  # Explicitly disable Azure CLI auth
-  use_cli = false
-  
-  # Use environment variables for auth
-  subscription_id = var.subscription_id
-  client_id       = var.client_id
-  client_secret   = var.client_secret
-  tenant_id       = var.tenant_id
+  # Explicitly configure authentication via environment variables
+  # These will be set in Jenkins
+  use_msi = false
+  skip_provider_registration = true
 }
 terraform {
   backend "azurerm" {
