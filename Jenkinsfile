@@ -5,12 +5,6 @@ pipeline {
         // Azure Storage Backend Credentials
         ARM_ACCESS_KEY = credentials('arm-access-key')
         
-        // Azure Service Principal Credentials using Jenkins-SP credential
-        ARM_CLIENT_ID = credentials('Jenkins-SP')['clientId']
-        ARM_CLIENT_SECRET = credentials('Jenkins-SP')['clientSecret']
-        ARM_SUBSCRIPTION_ID = credentials('Jenkins-SP')['subscriptionId']
-        ARM_TENANT_ID = credentials('Jenkins-SP')['tenantId']
-        
         // Terraform Automation Settings
         TF_IN_AUTOMATION = "true"
         TF_WORKSPACE = "${params.ENVIRONMENT}"
@@ -30,29 +24,25 @@ pipeline {
     }
 
     stages {
-        stage('Verify Credentials') {
+        stage('Initialize') {
             steps {
                 script {
-                    // Verify credentials exist before proceeding
-                    withCredentials([
-                        string(credentialsId: 'arm-access-key', variable: 'ARM_ACCESS_KEY'),
-                        [$class: 'AzureServicePrincipal', credentialsId: 'Jenkins-SP']
-                    ]) {
-                        echo "All required credentials are available"
+                    // Get Azure Service Principal credentials
+                    withCredentials([azureServicePrincipal('Jenkins-SP')]) {
+                        env.ARM_CLIENT_ID = "${env.AZURE_CLIENT_ID}"
+                        env.ARM_CLIENT_SECRET = "${env.AZURE_CLIENT_SECRET}"
+                        env.ARM_SUBSCRIPTION_ID = "${env.AZURE_SUBSCRIPTION_ID}"
+                        env.ARM_TENANT_ID = "${env.AZURE_TENANT_ID}"
                     }
+                    
+                    echo "Using Service Principal with Client ID: ${env.ARM_CLIENT_ID}"
                 }
             }
         }
         
         stage('Checkout SCM') {
             steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/main']],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/smahi001/Project3-IaC.git'
-                    ]]
-                ])
+                checkout scm
                 sh 'terraform version'
             }
         }
@@ -71,7 +61,6 @@ pipeline {
                             -reconfigure
                         """
                         
-                        // Select or create workspace
                         sh """
                         terraform workspace select ${params.ENVIRONMENT} || \
                         terraform workspace new ${params.ENVIRONMENT}
