@@ -36,22 +36,30 @@ pipeline {
                 
                 // Then plan or apply
                 script {
+                    def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
+                    
+                    // Check if vars file exists
+                    def varsFileExists = fileExists(tfVarsFile)
+                    if (!varsFileExists) {
+                        error("ERROR: Variables file ${tfVarsFile} not found!")
+                    }
+                    
                     if (params.ACTION == 'plan') {
                         sh """
                         terraform plan \
-                            -var-file=${params.ENVIRONMENT}.tfvars \
+                            -var-file=${tfVarsFile} \
                             -input=false
                         """
                     } else if (params.ACTION == 'apply') {
                         if (params.ENVIRONMENT == 'production') {
-                            timeout(30) {
+                            timeout(time: 30, unit: 'MINUTES') {
                                 input(message: "Approve PRODUCTION deployment?")
                             }
                         }
                         sh """
                         terraform apply \
                             -auto-approve \
-                            -var-file=${params.ENVIRONMENT}.tfvars \
+                            -var-file=${tfVarsFile} \
                             -input=false
                         """
                     }
