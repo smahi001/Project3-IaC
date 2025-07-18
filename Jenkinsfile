@@ -14,26 +14,50 @@ pipeline {
         
         stage('Terraform Init') {
             steps {
-                sh '''
-                terraform init \
-                  -backend-config="resource_group_name=tfstate-rg" \
-                  -backend-config="storage_account_name=mytfstate123" \
-                  -backend-config="container_name=tfstate" \
-                  -backend-config="key=terraform.tfstate"
-                '''
+                script {
+                    try {
+                        sh '''
+                        terraform init \
+                            -backend-config="resource_group_name=tfstate-rg" \
+                            -backend-config="storage_account_name=mytfstate123" \
+                            -backend-config="container_name=tfstate" \
+                            -backend-config="key=terraform.tfstate"
+                        '''
+                    } catch (err) {
+                        echo "Init failed: ${err}"
+                        currentBuild.result = 'FAILURE'
+                        error('Terraform init failed')
+                    }
+                }
             }
         }
         
         stage('Terraform Validate') {
             steps {
-                sh 'terraform validate'
+                script {
+                    try {
+                        sh 'terraform validate'
+                    } catch (err) {
+                        echo "Validation failed: ${err}"
+                        currentBuild.result = 'FAILURE'
+                        error('Terraform validation failed')
+                    }
+                }
             }
         }
         
         stage('Terraform Plan') {
             steps {
-                sh 'terraform plan -out=tfplan'
-                archiveArtifacts artifacts: 'tfplan'
+                script {
+                    try {
+                        sh 'terraform plan -out=tfplan'
+                        archiveArtifacts artifacts: 'tfplan'
+                    } catch (err) {
+                        echo "Plan failed: ${err}"
+                        currentBuild.result = 'FAILURE'
+                        error('Terraform plan failed')
+                    }
+                }
             }
         }
     }
@@ -41,6 +65,14 @@ pipeline {
     post {
         always {
             cleanWs()
+            script {
+                // Add any cleanup steps here
+            }
+        }
+        failure {
+            mail to: 'team@yourdomain.com',
+                 subject: "Failed Pipeline: ${currentBuild.fullDisplayName}",
+                 body: "Check console at ${env.BUILD_URL}"
         }
     }
 }
