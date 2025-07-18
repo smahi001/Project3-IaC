@@ -1,5 +1,5 @@
 environment          = "dev"
-resource_group_name  = "project3-rg"  # Using your existing RG
+resource_group_name  = "project3-rg"
 location             = "southindia"
 
 # Networking
