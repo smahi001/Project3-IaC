@@ -3,13 +3,13 @@ pipeline {
     
     environment {
         ARM_ACCESS_KEY = credentials('arm-access-key')
-        TF_IN_AUTOMATION = "true"  // Recommended for CI/CD environments
+        TF_IN_AUTOMATION = "true"
     }
 
     parameters {
         choice(
             name: 'ACTION',
-            choices: ['plan', 'apply'],  // Removed destroy option
+            choices: ['plan', 'apply'],
             description: 'Terraform action to perform'
         )
         choice(
@@ -23,7 +23,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
-                sh 'terraform version'  // Verify Terraform is installed
+                sh 'terraform version'
             }
         }
         
@@ -36,10 +36,23 @@ pipeline {
                             -backend-config="resource_group_name=tfstate-rg" \
                             -backend-config="storage_account_name=mytfstate123" \
                             -backend-config="container_name=tfstate" \
-                            -backend-config="key=${params.ENVIRONMENT}.tfstate"
+                            -backend-config="key=${params.ENVIRONMENT}.tfstate" \
+                            -upgrade
                         """
                     } catch (err) {
                         error("Terraform init failed: ${err}")
+                    }
+                }
+            }
+        }
+        
+        stage('Terraform Validate') {
+            steps {
+                script {
+                    try {
+                        sh 'terraform validate'
+                    } catch (err) {
+                        error("Terraform validation failed: ${err}")
                     }
                 }
             }
@@ -50,8 +63,14 @@ pipeline {
                 expression { params.ACTION == 'plan' || params.ACTION == 'apply' }
             }
             steps {
-                sh 'terraform plan -out=tfplan'
-                archiveArtifacts artifacts: 'tfplan'
+                script {
+                    try {
+                        sh 'terraform plan -out=tfplan'
+                        archiveArtifacts artifacts: 'tfplan'
+                    } catch (err) {
+                        error("Terraform plan failed: ${err}")
+                    }
+                }
             }
         }
         
@@ -88,21 +107,13 @@ pipeline {
         always {
             cleanWs()
             script {
-                // Clean up sensitive files
                 sh 'rm -f tfplan || true'
             }
         }
         success {
-            slackSend(
-                color: 'good',
-                message: "SUCCESS: ${env.JOB_NAME} - ${params.ACTION} for ${params.ENVIRONMENT} - ${env.BUILD_URL}"
-            )
+            echo "Pipeline completed successfully for ${params.ENVIRONMENT}"
         }
         failure {
-            slackSend(
-                color: 'danger',
-                message: "FAILED: ${env.JOB_NAME} - ${params.ACTION} for ${params.ENVIRONMENT} - ${env.BUILD_URL}"
-            )
             mail(
                 to: 'devops-team@yourcompany.com',
                 subject: "FAILED: ${env.JOB_NAME} - Build #${env.BUILD_NUMBER}",
