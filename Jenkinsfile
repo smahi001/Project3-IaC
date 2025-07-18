@@ -15,24 +15,34 @@ pipeline {
     }
 
     stages {
-        stage('Setup and Authenticate') {
+        stage('Setup Environment') {
             steps {
                 script {
-                    // Install tools if needed (remove if already on agent)
+                    // Verify tools are installed (skip installation if already present)
                     sh '''
-                        echo "Checking tool versions:"
-                        terraform version || echo "Terraform not installed"
-                        az version || echo "Azure CLI not installed"
+                        echo "--- Tool Versions ---"
+                        terraform version || echo "Terraform not found"
+                        az version || echo "Azure CLI not found"
                     '''
+                }
+            }
+        }
 
-                    // Authenticate with Azure using Service Principal
+        stage('Azure Authentication') {
+            steps {
+                script {
                     withCredentials([azureServicePrincipal('Jenkins-SP')]) {
                         sh """
-                            echo "Logging into Azure CLI..."
-                            az login --service-principal -u ${AZURE_CLIENT_ID} -p ${AZURE_CLIENT_SECRET} --tenant ${AZURE_TENANT_ID}
+                            echo "Authenticating with Azure..."
+                            az login --service-principal \
+                                -u ${AZURE_CLIENT_ID} \
+                                -p ${AZURE_CLIENT_SECRET} \
+                                --tenant ${AZURE_TENANT_ID}
+                            
+                            echo "Setting subscription..."
                             az account set --subscription ${AZURE_SUBSCRIPTION_ID}
                             
-                            echo "Getting storage account key..."
+                            echo "Getting storage key..."
                             export ARM_ACCESS_KEY=\$(az storage account keys list \
                                 -g tfstate-rg \
                                 -n mytfstate123 \
@@ -100,8 +110,8 @@ pipeline {
                 script {
                     timeout(time: 30, unit: 'MINUTES') {
                         input(
-                            message: 'Approve production deployment?', 
-                            ok: 'Deploy'
+                            message: 'Approve PRODUCTION deployment?',
+                            ok: 'Confirm'
                         )
                     }
                 }
@@ -124,8 +134,12 @@ pipeline {
         always {
             cleanWs()
         }
+        success {
+            echo "SUCCESS: ${env.JOB_NAME} - ${params.ENVIRONMENT} - ${params.ACTION}"
+        }
         failure {
-            echo "Pipeline failed! Check logs at ${env.BUILD_URL}"
+            echo "FAILED: ${env.JOB_NAME} - ${params.ENVIRONMENT} - ${params.ACTION}"
+            echo "Check logs at: ${env.BUILD_URL}"
         }
     }
 }
