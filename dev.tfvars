@@ -1,9 +1,9 @@
-environment = "dev"
-vnet_address_space = ["10.0.0.0/16"]
-location             = "southindia"
+resource_group_name      = "dev-rg"
+location                 = "canadacentral"
+environment              = "dev"
 
-vnet_name            = "vnet-dev"
-vnet_address_space   = ["10.0.0.0/16"]
+vnet_name                = "vnet-dev"
+vnet_address_space       = ["10.0.0.0/16"]
 
 subnets = [
   {
