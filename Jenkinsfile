@@ -14,8 +14,12 @@ pipeline {
     }
 
     parameters {
-        choice(name: 'ACTION', choices: ['plan', 'apply'], description: 'Terraform action')
-        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'production'], description: 'Target environment')
+        choice(name: 'ACTION', 
+               choices: ['plan', 'apply'], 
+               description: 'Terraform action')
+        choice(name: 'ENVIRONMENT', 
+               choices: ['dev', 'staging', 'production'], 
+               description: 'Target environment')
     }
 
     stages {
@@ -25,6 +29,26 @@ pipeline {
             } 
         }
         
+        stage('Validate Config') {
+            steps {
+                sh '''
+                    # Check for duplicate variables
+                    if grep -oP 'variable "\K[^"]+' variables.tf | sort | uniq -d; then
+                        echo "Error: Duplicate variables found in variables.tf"
+                        exit 1
+                    fi
+                    
+                    # Validate tfvars files exist
+                    for env in dev staging production; do
+                        if [ ! -f "${env}.tfvars" ]; then
+                            echo "Error: Missing ${env}.tfvars file"
+                            exit 1
+                        fi
+                    done
+                '''
+            }
+        }
+        
         stage('Terraform Init') {
             steps {
                 withCredentials([
@@ -32,13 +56,13 @@ pipeline {
                     string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')
                 ]) {
                     sh """
-                    terraform init \
-                        -backend-config="resource_group_name=tfstate-rg" \
-                        -backend-config="storage_account_name=mytfstate123" \
-                        -backend-config="container_name=tfstate" \
-                        -backend-config="key=${params.ENVIRONMENT}.tfstate" \
-                        -upgrade \
-                        -reconfigure
+                        terraform init \
+                            -backend-config="resource_group_name=tfstate-rg" \
+                            -backend-config="storage_account_name=mytfstate123" \
+                            -backend-config="container_name=tfstate" \
+                            -backend-config="key=${params.ENVIRONMENT}.tfstate" \
+                            -upgrade \
+                            -reconfigure
                     """
                 }
             }
@@ -55,10 +79,10 @@ pipeline {
                 script {
                     if (params.ACTION == 'plan') {
                         sh """
-                        terraform plan \
-                            -var-file=${params.ENVIRONMENT}.tfvars \
-                            -input=false \
-                            -out=tfplan
+                            terraform plan \
+                                -var-file=${params.ENVIRONMENT}.tfvars \
+                                -input=false \
+                                -out=tfplan
                         """
                     } else if (params.ACTION == 'apply') {
                         if (params.ENVIRONMENT == 'production') {
@@ -67,10 +91,10 @@ pipeline {
                             }
                         }
                         sh """
-                        terraform apply \
-                            -auto-approve \
-                            -var-file=${params.ENVIRONMENT}.tfvars \
-                            -input=false
+                            terraform apply \
+                                -auto-approve \
+                                -var-file=${params.ENVIRONMENT}.tfvars \
+                                -input=false
                         """
                     }
                 }
@@ -87,6 +111,11 @@ pipeline {
         }
         failure { 
             echo "FAILED: Check logs at ${env.BUILD_URL}"
+            emailext (
+                subject: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "Check console output at ${env.BUILD_URL}",
+                to: 'devops-team@example.com'
+            )
         }
     }
 }
