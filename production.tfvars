@@ -1,5 +1,5 @@
-environment          = "production"
-resource_group_name  = "myapp-prod-rg"
+environment = "production" 
+vnet_address_space = ["10.2.0.0/16"]
 location             = "southindia"
 
 vnet_name            = "vnet-prod"
