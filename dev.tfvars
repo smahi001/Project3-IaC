@@ -1,5 +1,5 @@
-environment          = "dev"
-resource_group_name  = "myapp-dev-rg"
+environment = "dev"
+vnet_address_space = ["10.0.0.0/16"]
 location             = "southindia"
 
 vnet_name            = "vnet-dev"
