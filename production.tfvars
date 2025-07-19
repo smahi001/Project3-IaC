@@ -1,25 +1,27 @@
-environment = "production"
-prefix = "prod"
+environment          = "production"
+resource_group_name  = "myapp-prod-rg"
+location             = "southindia"
 
-resource_group_name = "myapp-production-rg"
-location = "southindia"
+vnet_name            = "vnet-prod"
+vnet_address_space   = ["10.2.0.0/16"]
 
-virtual_network_name = "vnet-production"
-address_space = ["10.0.0.0/16"]
-subnet_prefixes = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
-
-vm_size = "Standard_D2s_v3"
-admin_username = "prodadmin"
-instance_count = 4
-
-db_sku_name = "GP_Gen5_4"
-db_storage_mb = 10240
-
-enable_monitoring = true
+subnets = [
+  {
+    name           = "subnet-1"
+    address_prefix = "10.2.1.0/24"
+  },
+  {
+    name           = "subnet-2"
+    address_prefix = "10.2.2.0/24"
+  },
+  {
+    name           = "subnet-3"
+    address_prefix = "10.2.3.0/24"
+  }
+]
 
 tags = {
   Environment = "Production"
-  Owner = "DevOps"
-  CostCenter = "PROD456"
-  Criticality = "High"
+  Owner       = "DevOps"
+  Critical    = "true"
 }
