@@ -1,5 +1,5 @@
-environment          = "staging"
-resource_group_name  = "myapp-staging-rg"
+environment = "staging"
+vnet_address_space = ["10.1.0.0/16"]
 location             = "southindia"
 
 vnet_name            = "vnet-staging"
