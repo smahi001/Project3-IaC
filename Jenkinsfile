@@ -1,114 +1,92 @@
 pipeline {
     agent any
-
+    
     environment {
-        ARM_CLIENT_ID       = credentials('ARM_CLIENT_ID')
-        ARM_CLIENT_SECRET   = credentials('ARM_CLIENT_SECRET')
-        ARM_SUBSCRIPTION_ID = credentials('ARM_SUBSCRIPTION_ID')
-        ARM_TENANT_ID       = credentials('ARM_TENANT_ID')
+        // Azure authentication
+        ARM_SUBSCRIPTION_ID = "0c3951d2-78d6-421a-8afc-9886db28d0eb"
+        ARM_CLIENT_ID = "63b7aeb4-36de-468e-a7df-526b8fda26e2"
+        ARM_CLIENT_SECRET = credentials('azure-sp-secret')
+        ARM_TENANT_ID = "5e786868-9c77-4ab8-a348-aa45f70cf549"
+        
+        // Storage account credentials
+        ARM_ACCESS_KEY = credentials('arm-access-key')
+        TF_IN_AUTOMATION = "true"
+    }
+
+    parameters {
+        choice(name: 'ACTION', choices: ['plan', 'apply'], description: 'Terraform action')
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'production'], description: 'Target environment')
     }
 
     stages {
-        stage('Checkout Code') {
-            steps {
-                checkout scm
-            }
+        stage('Checkout Code') { 
+            steps { 
+                checkout scm 
+            } 
         }
-
-        // Dev Environment
-        stage('Terraform Dev Init') {
+        
+        stage('Terraform Init') {
             steps {
-                sh '''
+                withCredentials([
+                    string(credentialsId: 'arm-access-key', variable: 'ARM_ACCESS_KEY'),
+                    string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')
+                ]) {
+                    sh """
                     terraform init \
                         -backend-config="resource_group_name=tfstate-rg" \
                         -backend-config="storage_account_name=mytfstate123" \
                         -backend-config="container_name=tfstate" \
-                        -backend-config="key=dev.tfstate" \
-                        -upgrade -reconfigure
-                '''
+                        -backend-config="key=${params.ENVIRONMENT}.tfstate" \
+                        -upgrade \
+                        -reconfigure
+                    """
+                }
             }
         }
-        stage('Terraform Dev Validate') {
+        
+        stage('Terraform Validate') {
             steps {
                 sh 'terraform validate'
             }
         }
-        stage('Terraform Dev Plan') {
+        
+        stage('Terraform Plan/Apply') {
             steps {
-                sh 'terraform plan -var-file="dev.tfvars" -input=false'
-            }
-        }
-        stage('Terraform Dev Apply') {
-            steps {
-                input message: 'Approve apply for DEV?'
-                sh 'terraform apply -auto-approve -var-file="dev.tfvars"'
-            }
-        }
-
-        // Stage Environment
-        stage('Terraform Stage Init') {
-            steps {
-                sh '''
-                    terraform init \
-                        -backend-config="resource_group_name=tfstate-rg" \
-                        -backend-config="storage_account_name=mytfstate123" \
-                        -backend-config="container_name=tfstate" \
-                        -backend-config="key=stage.tfstate" \
-                        -upgrade -reconfigure
-                '''
-            }
-        }
-        stage('Terraform Stage Validate') {
-            steps {
-                sh 'terraform validate'
-            }
-        }
-        stage('Terraform Stage Plan') {
-            steps {
-                sh 'terraform plan -var-file="stage.tfvars" -input=false'
-            }
-        }
-        stage('Terraform Stage Apply') {
-            steps {
-                input message: 'Approve apply for STAGE?'
-                sh 'terraform apply -auto-approve -var-file="stage.tfvars"'
-            }
-        }
-
-        // Prod Environment
-        stage('Terraform Prod Init') {
-            steps {
-                sh '''
-                    terraform init \
-                        -backend-config="resource_group_name=tfstate-rg" \
-                        -backend-config="storage_account_name=mytfstate123" \
-                        -backend-config="container_name=tfstate" \
-                        -backend-config="key=prod.tfstate" \
-                        -upgrade -reconfigure
-                '''
-            }
-        }
-        stage('Terraform Prod Validate') {
-            steps {
-                sh 'terraform validate'
-            }
-        }
-        stage('Terraform Prod Plan') {
-            steps {
-                sh 'terraform plan -var-file="prod.tfvars" -input=false'
-            }
-        }
-        stage('Terraform Prod Apply') {
-            steps {
-                input message: 'Approve apply for PROD?'
-                sh 'terraform apply -auto-approve -var-file="prod.tfvars"'
+                script {
+                    if (params.ACTION == 'plan') {
+                        sh """
+                        terraform plan \
+                            -var-file=${params.ENVIRONMENT}.tfvars \
+                            -input=false \
+                            -out=tfplan
+                        """
+                    } else if (params.ACTION == 'apply') {
+                        if (params.ENVIRONMENT == 'production') {
+                            timeout(time: 30, unit: 'MINUTES') {
+                                input(message: "Approve PRODUCTION deployment?")
+                            }
+                        }
+                        sh """
+                        terraform apply \
+                            -auto-approve \
+                            -var-file=${params.ENVIRONMENT}.tfvars \
+                            -input=false
+                        """
+                    }
+                }
             }
         }
     }
 
     post {
-        always {
-            cleanWs()
+        always { 
+            cleanWs() 
+        }
+        success { 
+            echo "SUCCESS: ${params.ACTION} completed for ${params.ENVIRONMENT}"
+        }
+        failure { 
+            echo "FAILED: Check logs at ${env.BUILD_URL}"
         }
     }
 }
