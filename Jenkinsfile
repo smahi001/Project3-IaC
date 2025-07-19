@@ -9,13 +9,14 @@ pipeline {
     }
 
     stages {
-        stage('Checkout') {
+        stage('Checkout Code') {
             steps {
                 checkout scm
             }
         }
 
-        stage('Terraform Init') {
+        // Dev Environment
+        stage('Terraform Dev Init') {
             steps {
                 sh '''
                     terraform init \
@@ -27,23 +28,80 @@ pipeline {
                 '''
             }
         }
-
-        stage('Terraform Validate') {
+        stage('Terraform Dev Validate') {
             steps {
                 sh 'terraform validate'
             }
         }
-
-        stage('Terraform Plan') {
+        stage('Terraform Dev Plan') {
             steps {
                 sh 'terraform plan -var-file="dev.tfvars" -input=false'
             }
         }
-
-        stage('Terraform Apply') {
+        stage('Terraform Dev Apply') {
             steps {
-                input message: 'Approve Terraform apply?'
+                input message: 'Approve apply for DEV?'
                 sh 'terraform apply -auto-approve -var-file="dev.tfvars"'
+            }
+        }
+
+        // Stage Environment
+        stage('Terraform Stage Init') {
+            steps {
+                sh '''
+                    terraform init \
+                        -backend-config="resource_group_name=tfstate-rg" \
+                        -backend-config="storage_account_name=mytfstate123" \
+                        -backend-config="container_name=tfstate" \
+                        -backend-config="key=stage.tfstate" \
+                        -upgrade -reconfigure
+                '''
+            }
+        }
+        stage('Terraform Stage Validate') {
+            steps {
+                sh 'terraform validate'
+            }
+        }
+        stage('Terraform Stage Plan') {
+            steps {
+                sh 'terraform plan -var-file="stage.tfvars" -input=false'
+            }
+        }
+        stage('Terraform Stage Apply') {
+            steps {
+                input message: 'Approve apply for STAGE?'
+                sh 'terraform apply -auto-approve -var-file="stage.tfvars"'
+            }
+        }
+
+        // Prod Environment
+        stage('Terraform Prod Init') {
+            steps {
+                sh '''
+                    terraform init \
+                        -backend-config="resource_group_name=tfstate-rg" \
+                        -backend-config="storage_account_name=mytfstate123" \
+                        -backend-config="container_name=tfstate" \
+                        -backend-config="key=prod.tfstate" \
+                        -upgrade -reconfigure
+                '''
+            }
+        }
+        stage('Terraform Prod Validate') {
+            steps {
+                sh 'terraform validate'
+            }
+        }
+        stage('Terraform Prod Plan') {
+            steps {
+                sh 'terraform plan -var-file="prod.tfvars" -input=false'
+            }
+        }
+        stage('Terraform Prod Apply') {
+            steps {
+                input message: 'Approve apply for PROD?'
+                sh 'terraform apply -auto-approve -var-file="prod.tfvars"'
             }
         }
     }
