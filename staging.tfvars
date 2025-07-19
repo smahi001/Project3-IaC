@@ -1,24 +1,18 @@
-environment = "staging"
-prefix = "stg"
+environment          = "staging"
+resource_group_name  = "myapp-staging-rg"
+location             = "southindia"
 
-resource_group_name = "myapp-staging-rg"
-location = "southindia"
+vnet_name            = "vnet-staging"
+vnet_address_space   = ["10.1.0.0/16"]
 
-virtual_network_name = "vnet-staging"
-address_space = ["10.1.0.0/16"]
-subnet_prefixes = ["10.1.1.0/24", "10.1.2.0/24"]
-
-vm_size = "Standard_B2s"
-admin_username = "stagingadmin"
-instance_count = 2
-
-db_sku_name = "GP_Gen5_2"
-db_storage_mb = 5120
-
-enable_monitoring = true
+subnets = [
+  {
+    name           = "subnet-1"
+    address_prefix = "10.1.1.0/24"
+  }
+]
 
 tags = {
   Environment = "Staging"
-  Owner = "DevOps"
-  CostCenter = "STG123"
+  Owner       = "DevOps"
 }
