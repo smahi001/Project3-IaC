@@ -1,8 +1,9 @@
+# main.tf - Consolidated configuration
 terraform {
   required_version = ">= 1.0.0"
   
   backend "azurerm" {
-    # Configuration will be passed via CLI during init
+    # Backend config passed via CLI
   }
 
   required_providers {
@@ -22,6 +23,7 @@ provider "azurerm" {
   skip_provider_registration = true
 }
 
+# Resource definitions
 resource "azurerm_resource_group" "main" {
   name     = var.resource_group_name
   location = var.location
@@ -29,16 +31,16 @@ resource "azurerm_resource_group" "main" {
 }
 
 resource "azurerm_virtual_network" "main" {
-  name                = var.vnet_name
+  name                = "${var.environment}-${var.vnet_name}"
   address_space       = var.vnet_address_space
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
-  tags                = var.tags
+  tags                = merge(var.tags, { Environment = var.environment })
 }
 
 resource "azurerm_subnet" "subnets" {
   count                = length(var.subnets)
-  name                 = var.subnets[count.index].name
+  name                 = "${var.environment}-${var.subnets[count.index].name}"
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = [var.subnets[count.index].address_prefix]
