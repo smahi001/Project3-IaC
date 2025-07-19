@@ -1,8 +1,7 @@
 terraform {
-  required_version = "~> 4.37"
-  
+  required_version = "~> 1.5.0"
   backend "azurerm" {
-    # Configured via CLI
+    # backend config here...
   }
 }
 
