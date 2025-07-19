@@ -2,14 +2,11 @@ pipeline {
     agent any
     
     environment {
-        // Azure authentication
-        ARM_SUBSCRIPTION_ID = "0c3951d2-78d6-421a-8afc-9886db28d0eb"
+        ARM_ACCESS_KEY = credentials('arm-access-key')
         ARM_CLIENT_ID = "63b7aeb4-36de-468e-a7df-526b8fda26e2"
         ARM_CLIENT_SECRET = credentials('azure-sp-secret')
         ARM_TENANT_ID = "5e786868-9c77-4ab8-a348-aa45f70cf549"
-        
-        // Storage account credentials
-        ARM_ACCESS_KEY = credentials('arm-access-key')
+        ARM_SUBSCRIPTION_ID = "0c3951d2-78d6-421a-8afc-9886db28d0eb"
         TF_IN_AUTOMATION = "true"
     }
 
@@ -98,6 +95,7 @@ pipeline {
         failure { 
             echo "FAILED: Check logs at ${env.BUILD_URL}"
             sh 'terraform version || true'
+            sh 'cat ${params.ENVIRONMENT}.tfvars || true'
         }
     }
 }
