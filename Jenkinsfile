@@ -57,28 +57,33 @@ pipeline {
                 script {
                     def tfVarsFile = "${params.ENVIRONMENT}.tfvars"
                     
-                    if (params.ACTION == 'plan') {
-                        sh """
-                        terraform plan \
-                            -var-file=${tfVarsFile} \
-                            -input=false \
-                            -out=tfplan \
-                            -compact-warnings
-                        """
-                    } else if (params.ACTION == 'apply') {
-                        if (params.ENVIRONMENT == 'production') {
-                            timeout(time: 30, unit: 'MINUTES') {
-                                input(message: "Approve PRODUCTION deployment?")
+                    withCredentials([
+                        string(credentialsId: 'arm-access-key', variable: 'ARM_ACCESS_KEY'),
+                        string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')
+                    ]) {
+                        if (params.ACTION == 'plan') {
+                            sh """
+                            terraform plan \
+                                -var-file=${tfVarsFile} \
+                                -input=false \
+                                -out=tfplan \
+                                -compact-warnings
+                            """
+                        } else if (params.ACTION == 'apply') {
+                            if (params.ENVIRONMENT == 'production') {
+                                timeout(time: 30, unit: 'MINUTES') {
+                                    input(message: "Approve PRODUCTION deployment?")
+                                }
                             }
+                            sh """
+                            terraform apply \
+                                -auto-approve \
+                                -var-file=${tfVarsFile} \
+                                -input=false \
+                                -compact-warnings \
+                                -lock-timeout=5m
+                            """
                         }
-                        sh """
-                        terraform apply \
-                            -auto-approve \
-                            -var-file=${tfVarsFile} \
-                            -input=false \
-                            -compact-warnings \
-                            -lock-timeout=5m
-                        """
                     }
                 }
             }
@@ -93,7 +98,7 @@ pipeline {
             }
         }
         success { 
-            echo "SUCCESS: ${params.ACTION} completed for ${params.ENVIRONMENT}"
+            echo "SUCCESS: Terraform ${params.ACTION} completed for ${params.ENVIRONMENT}"
         }
         failure { 
             echo "FAILED: Check logs at ${env.BUILD_URL}"
