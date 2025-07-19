@@ -1,24 +1,57 @@
 terraform {
-  required_version = ">= 1.0.0"
-  required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 3.0"
-    }
-  }
-
   backend "azurerm" {
-    resource_group_name  = "tfstate-rg"
-    storage_account_name = "mytfstate123"
-    container_name      = "tfstate"
-    key                 = "dev.tfstate"
+    # Backend config will be passed via CLI during init
   }
 }
 
 provider "azurerm" {
   features {}
+  skip_provider_registration = true
 }
 
+# Variables
+variable "environment" {
+  description = "The deployment environment (dev, staging, production)"
+  type        = string
+}
+
+variable "resource_group_name" {
+  description = "Name of the resource group"
+  type        = string
+  default     = "project3-rg"
+}
+
+variable "location" {
+  description = "Azure region"
+  type        = string
+  default     = "southindia"
+}
+
+variable "vnet_name" {
+  description = "Virtual Network name"
+  type        = string
+}
+
+variable "vnet_address_space" {
+  description = "Virtual Network address space"
+  type        = list(string)
+}
+
+variable "subnets" {
+  description = "List of subnets"
+  type = list(object({
+    name           = string
+    address_prefix = string
+  }))
+}
+
+variable "tags" {
+  description = "Resource tags"
+  type        = map(string)
+  default     = {}
+}
+
+# Resources
 resource "azurerm_resource_group" "main" {
   name     = var.resource_group_name
   location = var.location
