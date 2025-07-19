@@ -1,10 +1,13 @@
 terraform {
   required_version = "~> 1.5.0"
+
   backend "azurerm" {
-    # backend config here...
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "mytfstate123"
+    container_name       = "tfstate"
+    key                  = "dev.tfstate"
   }
 }
-
 provider "azurerm" {
   features {}
   skip_provider_registration = true
