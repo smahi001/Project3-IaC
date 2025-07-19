@@ -2,26 +2,36 @@ pipeline {
     agent any
     
     environment {
-        // Azure authentication - using the credentials you have
-        ARM_SUBSCRIPTION_ID = "0c3951d2-78d6-421a-8afc-9886db28d0eb"
-        ARM_CLIENT_ID = credentials('Jenkins-SP')  // Your Azure Credential
-        ARM_CLIENT_SECRET = credentials('azure-sp-secret')  // Your new-secret
-        ARM_TENANT_ID = "5e786868-9c77-4ab8-a348-aa45f70cf549"
-        
         // Storage account credentials
         ARM_ACCESS_KEY = credentials('arm-access-key')
         TF_IN_AUTOMATION = "true"
+        
+        // Service Principal credentials
+        ARM_SUBSCRIPTION_ID = "0c3951d2-78d6-421a-8afc-9886db28d0eb"
+        ARM_CLIENT_ID = "63b7aeb4-36de-468e-a7df-526b8fda26e2"
+        ARM_CLIENT_SECRET = credentials('azure-sp-secret')
+        ARM_TENANT_ID = "5e786868-9c77-4ab8-a348-aa45f70cf549"
     }
 
     parameters {
-        choice(name: 'ACTION', choices: ['plan', 'apply'], description: 'Terraform action')
+        choice(name: 'ACTION', choices: ['plan', 'apply'], description: 'Dry-run or deploy')
         choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'production'], description: 'Target environment')
     }
 
     stages {
         stage('Checkout Code') { 
-            steps { 
-                checkout scm 
+            steps {
+                retry(3) {
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: '*/main']],
+                        extensions: [],
+                        userRemoteConfigs: [
+                            [url: 'https://github.com/smahi001/Project3-IaC.git',
+                             credentialsId: '']
+                        ]
+                    ])
+                }
             } 
         }
         
@@ -29,7 +39,6 @@ pipeline {
             steps {
                 withCredentials([
                     string(credentialsId: 'arm-access-key', variable: 'ARM_ACCESS_KEY'),
-                    string(credentialsId: 'Jenkins-SP', variable: 'ARM_CLIENT_ID'),
                     string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')
                 ]) {
                     sh """
@@ -58,7 +67,6 @@ pipeline {
                     
                     withCredentials([
                         string(credentialsId: 'arm-access-key', variable: 'ARM_ACCESS_KEY'),
-                        string(credentialsId: 'Jenkins-SP', variable: 'ARM_CLIENT_ID'),
                         string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')
                     ]) {
                         if (params.ACTION == 'plan') {
@@ -75,7 +83,6 @@ pipeline {
                                     input(message: "Approve PRODUCTION deployment?")
                                 }
                             }
-                            
                             sh """
                             terraform apply \
                                 -auto-approve \
@@ -92,33 +99,18 @@ pipeline {
     }
 
     post {
-        always {
-            node {
-                cleanWs()
-                script {
-                    try {
-                        sh 'terraform show -no-color || true'
-                    } catch (Exception e) {
-                        echo "Could not show terraform state: ${e.message}"
-                    }
-                }
+        always { 
+            cleanWs() 
+            script {
+                sh 'terraform show -no-color || true'
             }
         }
         success { 
-            node {
-                echo "SUCCESS: Terraform ${params.ACTION} completed for ${params.ENVIRONMENT}"
-            }
+            echo "SUCCESS: ${params.ACTION} completed for ${params.ENVIRONMENT}"
         }
         failure { 
-            node {
-                echo "FAILED: Check logs at ${env.BUILD_URL}"
-                try {
-                    sh 'terraform version || true'
-                    sh 'az --version || true'
-                } catch (Exception e) {
-                    echo "Could not get versions: ${e.message}"
-                }
-            }
+            echo "FAILED: Check logs at ${env.BUILD_URL}"
+            sh 'terraform version || true'
         }
     }
 }
