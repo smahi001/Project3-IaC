@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     options {
-        skipDefaultCheckout(true)
+        skipDefaultCheckout(false)
         disableConcurrentBuilds()
         timeout(time: 1, unit: 'HOURS')
     }
@@ -32,13 +32,15 @@ pipeline {
         stage('Prepare Environment') {
             steps {
                 script {
-                    // Map branch to environment
-                    env.ENVIRONMENT = BRANCH_NAME.startsWith('prod-') ? 'production' : 
-                                     BRANCH_NAME.startsWith('staging-') ? 'staging' : 'dev'
-                    
-                    echo "Environment: ${ENVIRONMENT}"
-                    echo "Branch: ${BRANCH_NAME}"
-                    checkout scm
+                    // Determine environment from branch name
+                    if (env.BRANCH_NAME == 'main') {
+                        env.ENVIRONMENT = 'production'
+                    } else if (env.BRANCH_NAME.startsWith('stage/')) {
+                        env.ENVIRONMENT = 'staging'
+                    } else {
+                        env.ENVIRONMENT = 'dev'
+                    }
+                    echo "Running for environment: ${ENVIRONMENT} (Branch: ${BRANCH_NAME})"
                 }
             }
         }
@@ -47,25 +49,36 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')]) {
                     script {
-                        // Configure Terraform to use Service Principal directly
-                        env.ARM_CLIENT_SECRET = "${ARM_CLIENT_SECRET}"
-                        
-                        // Get storage key (ensure SP has 'Storage Account Key Operator' role)
-                        env.ARM_ACCESS_KEY = sh(
+                        // Verify Azure CLI access first
+                        def loginStatus = sh(
                             script: """
                                 az login --service-principal \
-                                    -u $ARM_CLIENT_ID \
-                                    -p $ARM_CLIENT_SECRET \
-                                    --tenant $ARM_TENANT_ID
-                                
-                                az account set --subscription $ARM_SUBSCRIPTION_ID
-                                az storage account keys list \
-                                    -g $TF_BACKEND_RESOURCE_GROUP \
-                                    -n $TF_BACKEND_STORAGE_ACCOUNT \
-                                    --query '[0].value' -o tsv
+                                    -u ${ARM_CLIENT_ID} \
+                                    -p ${ARM_CLIENT_SECRET} \
+                                    --tenant ${ARM_TENANT_ID} && \
+                                az account set --subscription ${ARM_SUBSCRIPTION_ID}
                             """,
-                            returnStdout: true
-                        ).trim()
+                            returnStatus: true
+                        )
+
+                        if (loginStatus != 0) {
+                            error("Azure login failed - check service principal permissions")
+                        }
+
+                        // Get storage key with proper error handling
+                        try {
+                            env.ARM_ACCESS_KEY = sh(
+                                script: """
+                                    az storage account keys list \
+                                        -g ${TF_BACKEND_RESOURCE_GROUP} \
+                                        -n ${TF_BACKEND_STORAGE_ACCOUNT} \
+                                        --query '[0].value' -o tsv
+                                """,
+                                returnStdout: true
+                            ).trim()
+                        } catch (Exception e) {
+                            error("Failed to get storage key. Ensure SP has 'Storage Account Key Operator' role.\nError: ${e.getMessage()}")
+                        }
                     }
                 }
             }
@@ -73,18 +86,32 @@ pipeline {
 
         stage('Terraform Init') {
             steps {
-                sh """
-                    terraform init \
-                        -backend-config="resource_group_name=$TF_BACKEND_RESOURCE_GROUP" \
-                        -backend-config="storage_account_name=$TF_BACKEND_STORAGE_ACCOUNT" \
-                        -backend-config="container_name=$TF_BACKEND_CONTAINER" \
-                        -backend-config="key=${ENVIRONMENT}-${BRANCH_NAME}.tfstate" \
-                        -backend-config="access_key=$ARM_ACCESS_KEY" \
-                        -reconfigure
-                    
-                    terraform workspace select ${ENVIRONMENT}-${BRANCH_NAME} || \
-                    terraform workspace new ${ENVIRONMENT}-${BRANCH_NAME}
-                """
+                script {
+                    try {
+                        sh """
+                            terraform init \
+                                -backend-config="resource_group_name=${TF_BACKEND_RESOURCE_GROUP}" \
+                                -backend-config="storage_account_name=${TF_BACKEND_STORAGE_ACCOUNT}" \
+                                -backend-config="container_name=${TF_BACKEND_CONTAINER}" \
+                                -backend-config="key=${ENVIRONMENT}.tfstate" \
+                                -backend-config="access_key=${ARM_ACCESS_KEY}" \
+                                -reconfigure
+                            
+                            if ! terraform workspace list | grep -q '${ENVIRONMENT}'; then
+                                terraform workspace new ${ENVIRONMENT}
+                            fi
+                            terraform workspace select ${ENVIRONMENT}
+                        """
+                    } catch (Exception e) {
+                        error("Terraform init failed: ${e.getMessage()}")
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                sh "terraform validate"
             }
         }
 
@@ -93,12 +120,19 @@ pipeline {
                 expression { params.ACTION == 'plan' }
             }
             steps {
-                sh """
-                    terraform plan \
-                        -var-file="${ENVIRONMENT}.tfvars" \
-                        -out="tfplan-${BUILD_NUMBER}"
-                """
-                archiveArtifacts "tfplan-${BUILD_NUMBER}"
+                script {
+                    try {
+                        def planFile = "tfplan-${BUILD_NUMBER}"
+                        sh """
+                            terraform plan \
+                                -var-file="${ENVIRONMENT}.tfvars" \
+                                -out="${planFile}"
+                        """
+                        archiveArtifacts artifacts: "${planFile}", fingerprint: true
+                    } catch (Exception e) {
+                        error("Terraform plan failed: ${e.getMessage()}")
+                    }
+                }
             }
         }
 
@@ -112,8 +146,8 @@ pipeline {
             steps {
                 timeout(time: 30, unit: 'MINUTES') {
                     input(
-                        message: "Approve ${BRANCH_NAME} → ${ENVIRONMENT}?",
-                        submitterParameter: 'approver'
+                        message: "Approve deployment to ${ENVIRONMENT} (Branch: ${BRANCH_NAME})?",
+                        ok: 'Deploy'
                     )
                 }
             }
@@ -124,11 +158,17 @@ pipeline {
                 expression { params.ACTION == 'apply' }
             }
             steps {
-                sh """
-                    terraform apply \
-                        -auto-approve \
-                        -var-file="${ENVIRONMENT}.tfvars"
-                """
+                script {
+                    try {
+                        sh """
+                            terraform apply \
+                                -auto-approve \
+                                -var-file="${ENVIRONMENT}.tfvars"
+                        """
+                    } catch (Exception e) {
+                        error("Terraform apply failed: ${e.getMessage()}")
+                    }
+                }
             }
         }
     }
@@ -136,25 +176,25 @@ pipeline {
     post {
         always {
             cleanWs()
-            echo "Build ${BUILD_NUMBER} completed. See: ${BUILD_URL}"
+            echo "Pipeline completed. See details at: ${BUILD_URL}"
         }
         success {
             script {
-                if(params.ACTION == 'apply') {
-                    emailext(
-                        subject: "SUCCESS: ${JOB_NAME} [${BRANCH_NAME}] → ${ENVIRONMENT}",
-                        body: "Applied changes to ${ENVIRONMENT}\nBuild: ${BUILD_URL}",
-                        to: 'devops@example.com'
-                    )
-                }
+                mail(
+                    to: 'devops@example.com',
+                    subject: "SUCCESS: ${JOB_NAME} [${ENVIRONMENT}]",
+                    body: "Terraform ${params.ACTION} completed successfully\nBranch: ${BRANCH_NAME}\nBuild: ${BUILD_URL}"
+                )
             }
         }
         failure {
-            emailext(
-                subject: "FAILED: ${JOB_NAME} [${BRANCH_NAME}]",
-                body: "Failed during ${params.ACTION} for ${ENVIRONMENT}\nError: ${currentBuild.result}\nBuild: ${BUILD_URL}",
-                to: 'devops@example.com'
-            )
+            script {
+                mail(
+                    to: 'devops@example.com',
+                    subject: "FAILED: ${JOB_NAME} [${ENVIRONMENT}]",
+                    body: "Pipeline failed during ${params.ACTION}\nBranch: ${BRANCH_NAME}\nError: ${currentBuild.result}\nBuild: ${BUILD_URL}"
+                )
+            }
         }
     }
 }
