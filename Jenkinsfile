@@ -32,12 +32,11 @@ pipeline {
         stage('Prepare Environment') {
             steps {
                 script {
-                    // Simple branch to environment mapping
-                    env.ENVIRONMENT = (env.BRANCH_NAME == 'main') ? 'production' : 
-                                    (env.BRANCH_NAME.startsWith('stage/')) ? 'staging' : 'dev'
-                    
+                    // Enhanced branch to environment mapping
+                    env.ENVIRONMENT = determineEnvironment(env.BRANCH_NAME)
                     echo "Environment: ${ENVIRONMENT}"
                     echo "Branch: ${BRANCH_NAME}"
+                    checkout scm
                 }
             }
         }
@@ -46,27 +45,30 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'Jenkins-SP', variable: 'ARM_CLIENT_SECRET')]) {
                     script {
-                        // 1. First verify Azure CLI can authenticate
-                        def azLogin = sh(
-                            script: """
+                        // Secure authentication with error handling
+                        try {
+                            // 1. Azure Login
+                            sh """
                                 az login --service-principal \
                                     -u ${ARM_CLIENT_ID} \
-                                    -p ${ARM_CLIENT_SECRET} \
-                                    --tenant ${ARM_TENANT_ID} && \
+                                    -p '${ARM_CLIENT_SECRET}' \
+                                    --tenant ${ARM_TENANT_ID}
                                 az account set --subscription ${ARM_SUBSCRIPTION_ID}
-                            """,
-                            returnStatus: true
-                        )
-                        
-                        if (azLogin != 0) {
-                            error("Azure authentication failed. Check SP credentials and permissions.")
-                        }
+                            """
+                            
+                            // 2. Verify permissions
+                            def roles = sh(
+                                script: "az role assignment list --assignee ${ARM_CLIENT_ID} --query [].roleDefinitionName -o tsv",
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (!roles.contains('Contributor') || !roles.contains('Storage Account Key Operator Service Role')) {
+                                error("Service Principal missing required roles. Needs both 'Contributor' and 'Storage Account Key Operator Service Role'")
+                            }
 
-                        // 2. Get storage key with proper error handling
-                        try {
+                            // 3. Get storage key
                             env.ARM_ACCESS_KEY = sh(
                                 script: """
-                                    az role assignment list --assignee ${ARM_CLIENT_ID} --query [].roleDefinitionName -o tsv
                                     az storage account keys list \
                                         -g ${TF_BACKEND_RESOURCE_GROUP} \
                                         -n ${TF_BACKEND_STORAGE_ACCOUNT} \
@@ -75,11 +77,11 @@ pipeline {
                                 returnStdout: true
                             ).trim()
                             
-                            if (env.ARM_ACCESS_KEY == null || env.ARM_ACCESS_KEY.isEmpty()) {
-                                error("Failed to get storage key. Ensure SP has 'Storage Account Key Operator Service Role' on the storage account.")
+                            if (!env.ARM_ACCESS_KEY) {
+                                error("Empty storage key received. Verify SP permissions on storage account.")
                             }
                         } catch (Exception e) {
-                            error("Storage key retrieval failed: ${e.getMessage()}\nRequired role: 'Storage Account Key Operator Service Role'")
+                            error("Azure authentication failed: ${e.getMessage()}")
                         }
                     }
                 }
@@ -102,7 +104,7 @@ pipeline {
                             terraform workspace select ${ENVIRONMENT} || terraform workspace new ${ENVIRONMENT}
                         """
                     } catch (Exception e) {
-                        error("Terraform init failed: ${e.getMessage()}")
+                        error("Terraform init failed: ${e.getMessage()}\nVerify backend configuration and permissions.")
                     }
                 }
             }
@@ -110,7 +112,7 @@ pipeline {
 
         stage('Terraform Validate') {
             steps {
-                sh "terraform validate"
+                sh "terraform validate -no-color"
             }
         }
 
@@ -124,6 +126,7 @@ pipeline {
                         def planFile = "tfplan-${BUILD_NUMBER}"
                         sh """
                             terraform plan \
+                                -input=false \
                                 -var-file="${ENVIRONMENT}.tfvars" \
                                 -out="${planFile}"
                         """
@@ -145,10 +148,12 @@ pipeline {
             steps {
                 timeout(time: 30, unit: 'MINUTES') {
                     input(
-                        message: "Approve ${params.ACTION} for ${ENVIRONMENT}?",
-                        ok: 'Confirm'
+                        message: "Approve ${params.ACTION} for ${ENVIRONMENT} environment?",
+                        submitterParameter: 'approver',
+                        ok: 'Deploy'
                     )
                 }
+                echo "Approved by: ${approver}"
             }
         }
 
@@ -161,6 +166,7 @@ pipeline {
                     try {
                         sh """
                             terraform apply \
+                                -input=false \
                                 -auto-approve \
                                 -var-file="${ENVIRONMENT}.tfvars"
                         """
@@ -175,15 +181,20 @@ pipeline {
     post {
         always {
             cleanWs()
-            echo "Pipeline completed. See details at: ${BUILD_URL}"
+            echo "Pipeline completed. Details: ${BUILD_URL}"
         }
         success {
             script {
-                // Only send success emails for apply operations
                 if (params.ACTION == 'apply') {
                     emailext(
                         subject: "SUCCESS: ${JOB_NAME} [${ENVIRONMENT}]",
-                        body: "Terraform ${params.ACTION} completed\nBranch: ${BRANCH_NAME}\nBuild: ${BUILD_URL}",
+                        body: """
+                        Terraform deployment completed
+                        Environment: ${ENVIRONMENT}
+                        Branch: ${BRANCH_NAME}
+                        Action: ${params.ACTION}
+                        Build: ${BUILD_URL}
+                        """,
                         to: 'devops@example.com',
                         mimeType: 'text/plain'
                     )
@@ -191,15 +202,28 @@ pipeline {
             }
         }
         failure {
-            script {
-                // Simplified email failure notification
-                emailext(
-                    subject: "FAILED: ${JOB_NAME} [${ENVIRONMENT}]",
-                    body: "Pipeline failed during ${params.ACTION}\nError: ${currentBuild.result}\nBuild: ${BUILD_URL}",
-                    to: 'devops@example.com',
-                    mimeType: 'text/plain'
-                )
-            }
+            emailext(
+                subject: "FAILED: ${JOB_NAME} [${ENVIRONMENT}]",
+                body: """
+                Pipeline failed!
+                Environment: ${ENVIRONMENT}
+                Branch: ${BRANCH_NAME}
+                Action: ${params.ACTION}
+                Error: ${currentBuild.result}
+                Build: ${BUILD_URL}
+                """,
+                to: 'devops@example.com',
+                mimeType: 'text/plain'
+            )
         }
+    }
+}
+
+// Helper function for environment mapping
+def determineEnvironment(branchName) {
+    switch(branchName) {
+        case 'main': return 'production'
+        case ~/^stage\/.*/: return 'staging'
+        default: return 'dev'
     }
 }
