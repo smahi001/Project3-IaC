@@ -2,21 +2,22 @@ pipeline {
     agent any
 
     options {
-        skipDefaultCheckout(true)  // We'll handle checkout manually
-        disableConcurrentBuilds()   // Prevent parallel runs on same branch
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
         timeout(time: 1, unit: 'HOURS')
     }
 
     environment {
-        // Static Azure config (non-sensitive)
+        // Azure Configuration
         ARM_SUBSCRIPTION_ID = "0c3951d2-78d6-421a-8afc-9886db28d0eb"
         ARM_CLIENT_ID = "63b7aeb4-36de-468e-a7df-526b8fda26e2"
         ARM_TENANT_ID = "5e786868-9c77-4ab8-a348-aa45f70cf549"
-
-        // Terraform backend (shared across branches)
+        
+        // Terraform Backend
         TF_BACKEND_RESOURCE_GROUP = "tfstate-rg"
         TF_BACKEND_STORAGE_ACCOUNT = "mytfstate123"
         TF_BACKEND_CONTAINER = "tfstate"
+        TF_IN_AUTOMATION = "true"
     }
 
     parameters {
@@ -31,11 +32,13 @@ pipeline {
         stage('Prepare Environment') {
             steps {
                 script {
-                    // Auto-detect environment from branch name
-                    env.ENVIRONMENT = detectEnvironmentFromBranch(BRANCH_NAME)
-                    echo "Running for environment: ${ENVIRONMENT}"
-
-                    checkout scm  // Checkout the specific branch
+                    // Map branch to environment
+                    env.ENVIRONMENT = BRANCH_NAME.startsWith('prod-') ? 'production' : 
+                                     BRANCH_NAME.startsWith('staging-') ? 'staging' : 'dev'
+                    
+                    echo "Environment: ${ENVIRONMENT}"
+                    echo "Branch: ${BRANCH_NAME}"
+                    checkout scm
                 }
             }
         }
@@ -43,17 +46,27 @@ pipeline {
         stage('Azure Authentication') {
             steps {
                 withCredentials([string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')]) {
-                    sh """
-                        az login --service-principal \
-                            --username "$ARM_CLIENT_ID" \
-                            --password "$ARM_CLIENT_SECRET" \
-                            --tenant "$ARM_TENANT_ID"
+                    script {
+                        // Configure Terraform to use Service Principal directly
+                        env.ARM_CLIENT_SECRET = "${ARM_CLIENT_SECRET}"
                         
-                        export ARM_ACCESS_KEY=\$(az storage account keys list \
-                            -g "$TF_BACKEND_RESOURCE_GROUP" \
-                            -n "$TF_BACKEND_STORAGE_ACCOUNT" \
-                            --query '[0].value' -o tsv)
-                    """
+                        // Get storage key (ensure SP has 'Storage Account Key Operator' role)
+                        env.ARM_ACCESS_KEY = sh(
+                            script: """
+                                az login --service-principal \
+                                    -u $ARM_CLIENT_ID \
+                                    -p $ARM_CLIENT_SECRET \
+                                    --tenant $ARM_TENANT_ID
+                                
+                                az account set --subscription $ARM_SUBSCRIPTION_ID
+                                az storage account keys list \
+                                    -g $TF_BACKEND_RESOURCE_GROUP \
+                                    -n $TF_BACKEND_STORAGE_ACCOUNT \
+                                    --query '[0].value' -o tsv
+                            """,
+                            returnStdout: true
+                        ).trim()
+                    }
                 }
             }
         }
@@ -65,7 +78,9 @@ pipeline {
                         -backend-config="resource_group_name=$TF_BACKEND_RESOURCE_GROUP" \
                         -backend-config="storage_account_name=$TF_BACKEND_STORAGE_ACCOUNT" \
                         -backend-config="container_name=$TF_BACKEND_CONTAINER" \
-                        -backend-config="key=${ENVIRONMENT}-${BRANCH_NAME}.tfstate"
+                        -backend-config="key=${ENVIRONMENT}-${BRANCH_NAME}.tfstate" \
+                        -backend-config="access_key=$ARM_ACCESS_KEY" \
+                        -reconfigure
                     
                     terraform workspace select ${ENVIRONMENT}-${BRANCH_NAME} || \
                     terraform workspace new ${ENVIRONMENT}-${BRANCH_NAME}
@@ -81,7 +96,7 @@ pipeline {
                 sh """
                     terraform plan \
                         -var-file="${ENVIRONMENT}.tfvars" \
-                        -out="${WORKSPACE}/tfplan-${BUILD_NUMBER}"
+                        -out="tfplan-${BUILD_NUMBER}"
                 """
                 archiveArtifacts "tfplan-${BUILD_NUMBER}"
             }
@@ -97,11 +112,10 @@ pipeline {
             steps {
                 timeout(time: 30, unit: 'MINUTES') {
                     input(
-                        message: "Approve ${BRANCH_NAME} deployment to ${ENVIRONMENT}?",
+                        message: "Approve ${BRANCH_NAME} → ${ENVIRONMENT}?",
                         submitterParameter: 'approver'
                     )
                 }
-                echo "Approved by: ${approver}"
             }
         }
 
@@ -110,7 +124,11 @@ pipeline {
                 expression { params.ACTION == 'apply' }
             }
             steps {
-                sh "terraform apply -auto-approve -var-file=${ENVIRONMENT}.tfvars"
+                sh """
+                    terraform apply \
+                        -auto-approve \
+                        -var-file="${ENVIRONMENT}.tfvars"
+                """
             }
         }
     }
@@ -118,31 +136,25 @@ pipeline {
     post {
         always {
             cleanWs()
-            echo "Build ${BUILD_NUMBER} completed. Details: ${BUILD_URL}"
+            echo "Build ${BUILD_NUMBER} completed. See: ${BUILD_URL}"
         }
         success {
-            emailext(
-                subject: "SUCCESS: ${JOB_NAME} [${BRANCH_NAME}] - ${params.ACTION}",
-                body: "Completed ${params.ACTION} for ${ENVIRONMENT}\nBranch: ${BRANCH_NAME}\nBuild: ${BUILD_URL}",
-                to: 'devops@example.com'
-            )
+            script {
+                if(params.ACTION == 'apply') {
+                    emailext(
+                        subject: "SUCCESS: ${JOB_NAME} [${BRANCH_NAME}] → ${ENVIRONMENT}",
+                        body: "Applied changes to ${ENVIRONMENT}\nBuild: ${BUILD_URL}",
+                        to: 'devops@example.com'
+                    )
+                }
+            }
         }
         failure {
             emailext(
-                subject: "FAILED: ${JOB_NAME} [${BRANCH_NAME}] - ${params.ACTION}",
-                body: "Failed ${params.ACTION} for ${ENVIRONMENT}\nBranch: ${BRANCH_NAME}\nBuild: ${BUILD_URL}",
+                subject: "FAILED: ${JOB_NAME} [${BRANCH_NAME}]",
+                body: "Failed during ${params.ACTION} for ${ENVIRONMENT}\nError: ${currentBuild.result}\nBuild: ${BUILD_URL}",
                 to: 'devops@example.com'
             )
         }
-    }
-}
-
-// Helper function to map branches to environments
-def detectEnvironmentFromBranch(String branchName) {
-    switch(branchName) {
-        case ~/^dev-.*/:       return 'dev'
-        case ~/^staging-.*/:   return 'staging'
-        case ~/^main|prod-.*/: return 'production'
-        default:               return 'dev'  // Fallback for feature branches
     }
 }
