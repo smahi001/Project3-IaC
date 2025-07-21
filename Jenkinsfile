@@ -32,15 +32,12 @@ pipeline {
         stage('Prepare Environment') {
             steps {
                 script {
-                    // Determine environment from branch name
-                    if (env.BRANCH_NAME == 'main') {
-                        env.ENVIRONMENT = 'production'
-                    } else if (env.BRANCH_NAME.startsWith('stage/')) {
-                        env.ENVIRONMENT = 'staging'
-                    } else {
-                        env.ENVIRONMENT = 'dev'
-                    }
-                    echo "Running for environment: ${ENVIRONMENT} (Branch: ${BRANCH_NAME})"
+                    // Simple branch to environment mapping
+                    env.ENVIRONMENT = (env.BRANCH_NAME == 'main') ? 'production' : 
+                                    (env.BRANCH_NAME.startsWith('stage/')) ? 'staging' : 'dev'
+                    
+                    echo "Environment: ${ENVIRONMENT}"
+                    echo "Branch: ${BRANCH_NAME}"
                 }
             }
         }
@@ -49,8 +46,8 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')]) {
                     script {
-                        // Verify Azure CLI access first
-                        def loginStatus = sh(
+                        // 1. First verify Azure CLI can authenticate
+                        def azLogin = sh(
                             script: """
                                 az login --service-principal \
                                     -u ${ARM_CLIENT_ID} \
@@ -60,15 +57,16 @@ pipeline {
                             """,
                             returnStatus: true
                         )
-
-                        if (loginStatus != 0) {
-                            error("Azure login failed - check service principal permissions")
+                        
+                        if (azLogin != 0) {
+                            error("Azure authentication failed. Check SP credentials and permissions.")
                         }
 
-                        // Get storage key with proper error handling
+                        // 2. Get storage key with proper error handling
                         try {
                             env.ARM_ACCESS_KEY = sh(
                                 script: """
+                                    az role assignment list --assignee ${ARM_CLIENT_ID} --query [].roleDefinitionName -o tsv
                                     az storage account keys list \
                                         -g ${TF_BACKEND_RESOURCE_GROUP} \
                                         -n ${TF_BACKEND_STORAGE_ACCOUNT} \
@@ -76,8 +74,12 @@ pipeline {
                                 """,
                                 returnStdout: true
                             ).trim()
+                            
+                            if (env.ARM_ACCESS_KEY == null || env.ARM_ACCESS_KEY.isEmpty()) {
+                                error("Failed to get storage key. Ensure SP has 'Storage Account Key Operator Service Role' on the storage account.")
+                            }
                         } catch (Exception e) {
-                            error("Failed to get storage key. Ensure SP has 'Storage Account Key Operator' role.\nError: ${e.getMessage()}")
+                            error("Storage key retrieval failed: ${e.getMessage()}\nRequired role: 'Storage Account Key Operator Service Role'")
                         }
                     }
                 }
@@ -97,10 +99,7 @@ pipeline {
                                 -backend-config="access_key=${ARM_ACCESS_KEY}" \
                                 -reconfigure
                             
-                            if ! terraform workspace list | grep -q '${ENVIRONMENT}'; then
-                                terraform workspace new ${ENVIRONMENT}
-                            fi
-                            terraform workspace select ${ENVIRONMENT}
+                            terraform workspace select ${ENVIRONMENT} || terraform workspace new ${ENVIRONMENT}
                         """
                     } catch (Exception e) {
                         error("Terraform init failed: ${e.getMessage()}")
@@ -146,8 +145,8 @@ pipeline {
             steps {
                 timeout(time: 30, unit: 'MINUTES') {
                     input(
-                        message: "Approve deployment to ${ENVIRONMENT} (Branch: ${BRANCH_NAME})?",
-                        ok: 'Deploy'
+                        message: "Approve ${params.ACTION} for ${ENVIRONMENT}?",
+                        ok: 'Confirm'
                     )
                 }
             }
@@ -180,19 +179,25 @@ pipeline {
         }
         success {
             script {
-                mail(
-                    to: 'devops@example.com',
-                    subject: "SUCCESS: ${JOB_NAME} [${ENVIRONMENT}]",
-                    body: "Terraform ${params.ACTION} completed successfully\nBranch: ${BRANCH_NAME}\nBuild: ${BUILD_URL}"
-                )
+                // Only send success emails for apply operations
+                if (params.ACTION == 'apply') {
+                    emailext(
+                        subject: "SUCCESS: ${JOB_NAME} [${ENVIRONMENT}]",
+                        body: "Terraform ${params.ACTION} completed\nBranch: ${BRANCH_NAME}\nBuild: ${BUILD_URL}",
+                        to: 'devops@example.com',
+                        mimeType: 'text/plain'
+                    )
+                }
             }
         }
         failure {
             script {
-                mail(
-                    to: 'devops@example.com',
+                // Simplified email failure notification
+                emailext(
                     subject: "FAILED: ${JOB_NAME} [${ENVIRONMENT}]",
-                    body: "Pipeline failed during ${params.ACTION}\nBranch: ${BRANCH_NAME}\nError: ${currentBuild.result}\nBuild: ${BUILD_URL}"
+                    body: "Pipeline failed during ${params.ACTION}\nError: ${currentBuild.result}\nBuild: ${BUILD_URL}",
+                    to: 'devops@example.com',
+                    mimeType: 'text/plain'
                 )
             }
         }
