@@ -1,125 +1,148 @@
 pipeline {
     agent any
-    
+
+    options {
+        skipDefaultCheckout(true)  // We'll handle checkout manually
+        disableConcurrentBuilds()   // Prevent parallel runs on same branch
+        timeout(time: 1, unit: 'HOURS')
+    }
+
     environment {
-        // Azure authentication
+        // Static Azure config (non-sensitive)
         ARM_SUBSCRIPTION_ID = "0c3951d2-78d6-421a-8afc-9886db28d0eb"
         ARM_CLIENT_ID = "63b7aeb4-36de-468e-a7df-526b8fda26e2"
-        ARM_CLIENT_SECRET = credentials('azure-sp-secret')
         ARM_TENANT_ID = "5e786868-9c77-4ab8-a348-aa45f70cf549"
-        
-        // Storage account credentials
-        ARM_ACCESS_KEY = credentials('arm-access-key')
-        TF_IN_AUTOMATION = "true"
+
+        // Terraform backend (shared across branches)
+        TF_BACKEND_RESOURCE_GROUP = "tfstate-rg"
+        TF_BACKEND_STORAGE_ACCOUNT = "mytfstate123"
+        TF_BACKEND_CONTAINER = "tfstate"
     }
 
     parameters {
-        choice(name: 'ACTION', 
-               choices: ['plan', 'apply'], 
-               description: 'Terraform action')
-        choice(name: 'ENVIRONMENT', 
-               choices: ['dev', 'staging', 'production'], 
-               description: 'Target environment')
+        choice(
+            name: 'ACTION',
+            choices: ['plan', 'apply'],
+            description: 'Select Terraform action'
+        )
     }
 
     stages {
-        stage('Checkout Code') { 
-            steps { 
-                checkout scm 
-            } 
-        }
-        
-        stage('Validate Configuration') {
+        stage('Prepare Environment') {
             steps {
-                echo "Validating Terraform configuration files..."
-                sh '''
-                    set -e # Exit immediately if any command fails
+                script {
+                    // Auto-detect environment from branch name
+                    env.ENVIRONMENT = detectEnvironmentFromBranch(BRANCH_NAME)
+                    echo "Running for environment: ${ENVIRONMENT}"
 
-                    # Check for duplicate variables in variables.tf
-                    # Double-escape the backslash for literal interpretation by Groovy.
-                    if grep -oP 'variable "\\\\K[^"]+' variables.tf | sort | uniq -d; then
-                        echo "Error: Duplicate variables found in variables.tf"
-                        exit 1
-                    fi
-
-                    # Validate tfvars files exist for all environments
-                    for env_name in dev staging production; do
-                        if [ ! -f "${env_name}.tfvars" ]; then
-                            echo "Error: Missing ${env_name}.tfvars file"
-                            exit 1
-                        fi
-                    done
-                '''
+                    checkout scm  // Checkout the specific branch
+                }
             }
         }
-        
-        stage('Terraform Init') {
+
+        stage('Azure Authentication') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'arm-access-key', variable: 'ARM_ACCESS_KEY'),
-                    string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')
-                ]) {
+                withCredentials([string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')]) {
                     sh """
-                        terraform init \
-                            -backend-config="resource_group_name=tfstate-rg" \
-                            -backend-config="storage_account_name=mytfstate123" \
-                            -backend-config="container_name=tfstate" \
-                            -backend-config="key=${params.ENVIRONMENT}.tfstate" \
-                            -upgrade \
-                            -reconfigure
+                        az login --service-principal \
+                            --username "$ARM_CLIENT_ID" \
+                            --password "$ARM_CLIENT_SECRET" \
+                            --tenant "$ARM_TENANT_ID"
+                        
+                        export ARM_ACCESS_KEY=\$(az storage account keys list \
+                            -g "$TF_BACKEND_RESOURCE_GROUP" \
+                            -n "$TF_BACKEND_STORAGE_ACCOUNT" \
+                            --query '[0].value' -o tsv)
                     """
                 }
             }
         }
-        
-        stage('Terraform Validate') {
+
+        stage('Terraform Init') {
             steps {
-                sh 'terraform validate'
+                sh """
+                    terraform init \
+                        -backend-config="resource_group_name=$TF_BACKEND_RESOURCE_GROUP" \
+                        -backend-config="storage_account_name=$TF_BACKEND_STORAGE_ACCOUNT" \
+                        -backend-config="container_name=$TF_BACKEND_CONTAINER" \
+                        -backend-config="key=${ENVIRONMENT}-${BRANCH_NAME}.tfstate"
+                    
+                    terraform workspace select ${ENVIRONMENT}-${BRANCH_NAME} || \
+                    terraform workspace new ${ENVIRONMENT}-${BRANCH_NAME}
+                """
             }
         }
-        
-        stage('Terraform Plan/Apply') {
+
+        stage('Terraform Plan') {
+            when {
+                expression { params.ACTION == 'plan' }
+            }
             steps {
-                script {
-                    if (params.ACTION == 'plan') {
-                        sh """
-                            terraform plan \
-                                -var-file=${params.ENVIRONMENT}.tfvars \
-                                -input=false \
-                                -out=tfplan
-                        """
-                    } else if (params.ACTION == 'apply') {
-                        if (params.ENVIRONMENT == 'production') {
-                            timeout(time: 30, unit: 'MINUTES') {
-                                input(message: "Approve PRODUCTION deployment?")
-                            }
-                        }
-                        sh """
-                            terraform apply \
-                                -auto-approve \
-                                -var-file=${params.ENVIRONMENT}.tfvars \
-                                -input=false
-                        """
-                    }
+                sh """
+                    terraform plan \
+                        -var-file="${ENVIRONMENT}.tfvars" \
+                        -out="${WORKSPACE}/tfplan-${BUILD_NUMBER}"
+                """
+                archiveArtifacts "tfplan-${BUILD_NUMBER}"
+            }
+        }
+
+        stage('Approval Gate') {
+            when {
+                allOf {
+                    expression { params.ACTION == 'apply' }
+                    expression { ENVIRONMENT == 'production' || ENVIRONMENT == 'staging' }
                 }
+            }
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input(
+                        message: "Approve ${BRANCH_NAME} deployment to ${ENVIRONMENT}?",
+                        submitterParameter: 'approver'
+                    )
+                }
+                echo "Approved by: ${approver}"
+            }
+        }
+
+        stage('Terraform Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                sh "terraform apply -auto-approve -var-file=${ENVIRONMENT}.tfvars"
             }
         }
     }
 
     post {
-        always { 
-            cleanWs() 
+        always {
+            cleanWs()
+            echo "Build ${BUILD_NUMBER} completed. Details: ${BUILD_URL}"
         }
-        success { 
-            echo "SUCCESS: ${params.ACTION} completed for ${params.ENVIRONMENT}"
-        }
-        failure { 
-            echo "FAILED: Check logs at ${env.BUILD_URL}"
-            emailext (
-                subject: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
-                body: "Check console output at ${env.BUILD_URL}",
-                to: 'devops-team@example.com'
+        success {
+            emailext(
+                subject: "SUCCESS: ${JOB_NAME} [${BRANCH_NAME}] - ${params.ACTION}",
+                body: "Completed ${params.ACTION} for ${ENVIRONMENT}\nBranch: ${BRANCH_NAME}\nBuild: ${BUILD_URL}",
+                to: 'devops@example.com'
             )
         }
+        failure {
+            emailext(
+                subject: "FAILED: ${JOB_NAME} [${BRANCH_NAME}] - ${params.ACTION}",
+                body: "Failed ${params.ACTION} for ${ENVIRONMENT}\nBranch: ${BRANCH_NAME}\nBuild: ${BUILD_URL}",
+                to: 'devops@example.com'
+            )
+        }
+    }
+}
+
+// Helper function to map branches to environments
+def detectEnvironmentFromBranch(String branchName) {
+    switch(branchName) {
+        case ~/^dev-.*/:       return 'dev'
+        case ~/^staging-.*/:   return 'staging'
+        case ~/^main|prod-.*/: return 'production'
+        default:               return 'dev'  // Fallback for feature branches
     }
 }
