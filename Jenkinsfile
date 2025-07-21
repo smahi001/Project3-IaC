@@ -44,7 +44,7 @@ pipeline {
 
         stage('Azure Authentication') {
             steps {
-                withCredentials([string(credentialsId: 'azure-sp-secret', variable: 'ARM_CLIENT_SECRET')]) {
+                withCredentials([string(credentialsId: 'Jenkins-SP', variable: 'ARM_CLIENT_SECRET')]) {
                     script {
                         // 1. First verify Azure CLI can authenticate
                         def azLogin = sh(
