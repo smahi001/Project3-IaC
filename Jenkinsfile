@@ -29,19 +29,23 @@ pipeline {
             } 
         }
         
-        stage('Validate Config') {
+        stage('Validate Configuration') {
             steps {
+                echo "Validating Terraform configuration files..."
                 sh '''
-                    # Check for duplicate variables
-                    if grep -oP 'variable "\K[^"]+' variables.tf | sort | uniq -d; then
+                    set -e # Exit immediately if any command fails
+
+                    # Check for duplicate variables in variables.tf
+                    # Double-escape the backslash for literal interpretation by Groovy.
+                    if grep -oP 'variable "\\\\K[^"]+' variables.tf | sort | uniq -d; then
                         echo "Error: Duplicate variables found in variables.tf"
                         exit 1
                     fi
-                    
-                    # Validate tfvars files exist
-                    for env in dev staging production; do
-                        if [ ! -f "${env}.tfvars" ]; then
-                            echo "Error: Missing ${env}.tfvars file"
+
+                    # Validate tfvars files exist for all environments
+                    for env_name in dev staging production; do
+                        if [ ! -f "${env_name}.tfvars" ]; then
+                            echo "Error: Missing ${env_name}.tfvars file"
                             exit 1
                         fi
                     done
